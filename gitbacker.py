@@ -42,6 +42,35 @@ class GitHub( object ):
         user = self.get_user( username )
         return self._call_api( 'repos/{}'.format( username ) )
 
+class LocalRepo( object ):
+
+    def __init__( self, root ):
+
+        self.root = root
+        self.logger = logging.getLogger( 'localrepo' )
+
+    def get_path( self, repo ):
+        return os.path.join( self.root, '{}.git'.format( repo ) )
+
+    def fetch_all_branches( self, repo ):
+        repo_dir = self.get_path( repo )
+        r = Repo( repo_dir )
+        branches = [b.name for b in r.branches]
+        for remote in r.remotes:
+            for branch in branches:
+                self.logger.info( 'checking {} branch: {}'.format(
+                    repo, branch ) )
+                remote.fetch( branch )
+
+    def create_or_update( self, repo, remote_url ):
+        repo_dir = self.get_path( repo )
+        if not os.path.exists( repo_dir ):
+            self.logger.info( 'creating local repo copy...' )
+            Repo.clone_from( remote_url, repo_dir, bare=True )
+        else:
+            self.logger.info( 'checking remote repo for changes...' )
+            self.fetch_all_branches( repo )
+
 if '__main__' == __name__:
 
     logging.basicConfig( level=logging.INFO )
@@ -51,23 +80,11 @@ if '__main__' == __name__:
     config.read( 'gitbacker.ini' )    
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
-    repo_root = config.get( 'options', 'repo_dir' )
 
     git = GitHub( username, api_token )
+    local = LocalRepo( config.get( 'options', 'repo_dir' ) )
     for repo in git.get_starred( username ):
         logger.info(  '{} ({})'.format( repo['name'], repo['id'] ) )
 
-        repo_dir = os.path.join( repo_root, '{}.git'.format( repo['name'] ) )
-        if not os.path.exists( repo_dir ):
-            logger.info( 'creating local repo copy...' )
-            Repo.clone_from( repo['git_url'], repo_dir, bare=True )
-        else:
-            logger.info( 'checking remote repo for changes...' )
-            r = Repo( repo_dir )
-            branches = [b.name for b in r.branches]
-            for remote in r.remotes:
-                for branch in branches:
-                    logger.info( 'checking {} branch: {}'.format(
-                        repo['name'], branch ) )
-                    remote.fetch( branch )
+        local.create_or_update( repo['name'], repo['git_url'] )
 
