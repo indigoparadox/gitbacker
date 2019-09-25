@@ -57,13 +57,17 @@ if '__main__' == __name__:
     for repo in git.get_starred( username ):
         logger.info(  '{} ({})'.format( repo['name'], repo['id'] ) )
 
-        repo_dir = os.path.join( repo_root, repo['name'] )
+        repo_dir = os.path.join( repo_root, '{}.git'.format( repo['name'] ) )
         if not os.path.exists( repo_dir ):
             logger.info( 'creating local repo copy...' )
             Repo.clone_from( repo['git_url'], repo_dir, bare=True )
         else:
             logger.info( 'checking remote repo for changes...' )
             r = Repo( repo_dir )
+            branches = [b.name for b in r.branches]
             for remote in r.remotes:
-                remote.fetch()
+                for branch in branches:
+                    logger.info( 'checking {} branch: {}'.format(
+                        repo['name'], branch ) )
+                    remote.fetch( branch )
 
