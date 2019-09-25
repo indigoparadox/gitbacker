@@ -1,2 +1,4 @@
 repos
 gitbacker.ini
+*.swp
+*.pyc
