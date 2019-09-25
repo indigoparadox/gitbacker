@@ -1,0 +1,6 @@
+[auth]
+username =
+token =
+
+[options]
+repo_dir = /srv/repos
