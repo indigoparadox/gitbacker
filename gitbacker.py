@@ -183,7 +183,7 @@ if '__main__' == __name__:
     parser.add_argument( '-m', '--max-size', type=int,
         help='Maximum repo size. Ignore repos larger than in MB.' )
     parser.add_argument( '-g', '--user-gists', action='store_true',
-        help='Backup users gists.' )
+        help='Backup user gists.' )
     parser.add_argument( '-f', '--starred-gists', action='store_true',
         help='Backup authenticated user\'s starred gists.' )
 
