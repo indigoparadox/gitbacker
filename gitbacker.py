@@ -5,6 +5,7 @@ import json
 import logging
 import re
 import os
+from argparse import ArgumentParser
 try:
     from configparser import ConfigParser
 except ImportError:
@@ -86,11 +87,25 @@ class LocalRepo( object ):
 
 if '__main__' == __name__:
 
-    logging.basicConfig( level=logging.INFO )
+    # Parse CLI args.
+    parser = ArgumentParser()
+
+    parser.add_argument( '-c', '--config', default='gitbacker.ini',
+        help='Path to the config file to load.' )
+    parser.add_argument( '-q', '--quiet', action='store_true',
+        help='Quiet mode.' )
+
+    args = parser.parse_args()
+
+    if args.quiet:
+        logging.basicConfig( level=logging.INFO )
+    else:
+        logging.basicConfig( level=logging.WARNING )
     logger = logging.getLogger( 'main' )
 
+    # Load auth config.
     config = ConfigParser()
-    config.read( 'gitbacker.ini' )    
+    config.read( args.config )
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
 
