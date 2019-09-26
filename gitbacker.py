@@ -60,11 +60,14 @@ class LocalRepo( object ):
 
     def __init__( self, root ):
 
-        self.root = root
+        self._root = root
         self.logger = logging.getLogger( 'localrepo' )
 
+    def get_root( self ):
+        return self._root
+
     def get_path( self, owner, repo ):
-        return os.path.join( self.root, owner, '{}.git'.format( repo ) )
+        return os.path.join( self._root, owner, '{}.git'.format( repo ) )
 
     def fetch_all_branches( self, owner, repo ):
         repo_dir = self.get_path( owner, repo )
@@ -85,6 +88,44 @@ class LocalRepo( object ):
         self.logger.info( 'checking all remote repo branches...' )
         self.fetch_all_branches( owner, repo )
 
+def backup_repo( local, repo, logger ):
+
+    owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
+    logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
+    logger.info( 'repo size: {}'.format( repo['size'] / 1024 ) )
+
+    #from pprint import PrettyPrinter
+    #pp = PrettyPrinter()
+    #pp.pprint( repo )
+
+    # Make sure owner directory exists.
+    owner_path = os.path.join( local.get_root(), repo['owner']['login'] )
+    if not os.path.exists( owner_path ):
+        logger.info(
+            'creating owner path for {}'.format( repo['owner']['login'] ) )
+        os.mkdir( owner_path )
+
+    local.create_or_update(
+        repo['owner']['login'], repo['name'], repo['git_url'] )
+
+def backup_user_repos( git, local, username, max_size ):
+    logger = logging.getLogger( 'user' )
+    for repo in git.get_user_repos( username ):
+        if max_size <= (repo['size'] / 1024):
+            logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
+                repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
+            continue
+        backup_repo( local, repo, logger )
+
+def backup_starred( git, local, username, max_size ):
+    logger = logging.getLogger( 'starred' )
+    for repo in git.get_starred( username ):
+        if max_size <= repo['size']:
+            logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
+                repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
+            continue
+        backup_repo( local, repo, logger )
+
 if '__main__' == __name__:
 
     # Parse CLI args.
@@ -94,13 +135,19 @@ if '__main__' == __name__:
         help='Path to the config file to load.' )
     parser.add_argument( '-q', '--quiet', action='store_true',
         help='Quiet mode.' )
+    parser.add_argument( '-s', '--starred', action='store_true',
+        help='Backup starred repositories.' )
+    parser.add_argument( '-r', '--repos', action='store_true',
+        help='Backup user repositories.' )
+    parser.add_argument( '-m', '--max-size', type=int,
+        help='Maximum repo size. Ignore repos larger than in MB.' )
 
     args = parser.parse_args()
 
     if args.quiet:
-        logging.basicConfig( level=logging.INFO )
-    else:
         logging.basicConfig( level=logging.WARNING )
+    else:
+        logging.basicConfig( level=logging.INFO )
     logger = logging.getLogger( 'main' )
 
     # Load auth config.
@@ -111,17 +158,10 @@ if '__main__' == __name__:
 
     git = GitHub( username, api_token )
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
-    for repo in git.get_starred( username ):
-        owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
-        logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
 
-        owner_path = os.path.join( config.get( 'options', 'repo_dir' ),
-            repo['owner']['login'] )
-        if not os.path.exists( owner_path ):
-            logger.info(
-                'creating owner path for {}'.format( repo['owner']['login'] ) )
-            os.mkdir( owner_path )
+    if args.starred:
+        backup_starred( git, local, username, args.max_size )
 
-        local.create_or_update(
-            repo['owner']['login'], repo['name'], repo['git_url'] )
+    if args.repos:
+        backup_user_repos( git, local, username, args.max_size )
 
