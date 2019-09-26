@@ -49,20 +49,20 @@ class GitHub( object ):
             for repo in response['json']:
                 yield repo
 
-    def get_starred( self, username ):
+    def get_starred_repos( self, username ):
         user = self.get_user( username )
         stars_url = re.sub( r'{.*}', '', user['starred_url'] )
         response = self._call_api( stars_url, relative=False )
         for repo in self._get_paged( response ):
             yield repo
 
-    def get_repos( self, username ):
+    def get_user_repos( self, username ):
         user = self.get_user( username )
         response = self._call_api( 'users/{}/repos'.format( username ) )
         for repo in self._get_paged( response ):
             yield repo
 
-    def get_gists( self, username ):
+    def get_user_gists( self, username ):
         user = self.get_user( username )
         response = self._call_api( 'users/{}/gists'.format( username ) )
         for gist in self._get_paged( response ):
@@ -143,18 +143,18 @@ def backup_gist( local, gist, logger ):
         gist['owner']['login'], gist['id'], gist['git_pull_url'] )
 
 def backup_user_repos( git, local, username, max_size ):
-    logger = logging.getLogger( 'user' )
-    for repo in git.get_repos( username ):
+    logger = logging.getLogger( 'userrepos' )
+    for repo in git.get_user_repos( username ):
         backup_repo( local, repo, logger, max_size )
 
-def backup_starred( git, local, username, max_size ):
-    logger = logging.getLogger( 'starred' )
-    for repo in git.get_starred( username ):
+def backup_starred_repos( git, local, username, max_size ):
+    logger = logging.getLogger( 'starredrepos' )
+    for repo in git.get_starred_repos( username ):
         backup_repo( local, repo, logger, max_size )
 
-def backup_gists( git, local, username, max_size ):
-    logger = logging.getLogger( 'gists' )
-    for gist in git.get_gists( username ):
+def backup_user_gists( git, local, username, max_size ):
+    logger = logging.getLogger( 'usergists' )
+    for gist in git.get_user_gists( username ):
         if max_size and max_size <= gist['size']:
             logger.warning( 'skipping gist {}/{} larger than {} ({})'.format(
                 repo['owner']['login'], repo['name'], max_size, gist['size'] ) )
@@ -170,13 +170,13 @@ if '__main__' == __name__:
         help='Path to the config file to load.' )
     parser.add_argument( '-q', '--quiet', action='store_true',
         help='Quiet mode.' )
-    parser.add_argument( '-s', '--starred', action='store_true',
+    parser.add_argument( '-s', '--starred-repos', action='store_true',
         help='Backup starred repositories.' )
-    parser.add_argument( '-r', '--repos', action='store_true',
+    parser.add_argument( '-r', '--user-repos', action='store_true',
         help='Backup user repositories.' )
     parser.add_argument( '-m', '--max-size', type=int,
         help='Maximum repo size. Ignore repos larger than in MB.' )
-    parser.add_argument( '-g', '--gists', action='store_true',
+    parser.add_argument( '-g', '--user-gists', action='store_true',
         help='Backup users gists.' )
 
     args = parser.parse_args()
@@ -196,12 +196,12 @@ if '__main__' == __name__:
     git = GitHub( username, api_token )
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
 
-    if args.starred:
+    if args.starred_repos:
         backup_starred( git, local, username, args.max_size )
 
-    if args.repos:
+    if args.user_repos:
         backup_user_repos( git, local, username, args.max_size )
 
-    if args.gists:
-        backup_gists( git, local, username, args.max_size )
+    if args.user_gists:
+        backup_user_gists( git, local, username, args.max_size )
 
