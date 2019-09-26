@@ -34,33 +34,39 @@ class GitHub( object ):
             rel_links = requests.utils.parse_header_links( r.headers['link'] )
             for link in rel_links:
                 if 'next' == link['rel']:
-                    return r.json(), link['url']
+                    return {'json': r.json(), 'next': link['url']}
 
-        return r.json(), None
+        return {'json': r.json(), 'next': None}
 
     def get_user( self, username ):
-        return self._call_api( 'users/{}'.format( username ) )[0]
+        return self._call_api( 'users/{}'.format( username ) )['json']
+
+    def _get_paged( self, response ):
+        for repo in response['json']:
+            yield repo
+        while None != response['next']:
+            response = self._call_api( response['next'], relative=False )
+            for repo in response['json']:
+                yield repo
 
     def get_starred( self, username ):
         user = self.get_user( username )
         stars_url = re.sub( r'{.*}', '', user['starred_url'] )
         response = self._call_api( stars_url, relative=False )
-        for repo in response[0]:
+        for repo in self._get_paged( response ):
             yield repo
-        while None != response[1]:
-            response = self._call_api( response[1], relative=False )
-            for repo in response[0]:
-                yield repo
 
     def get_repos( self, username ):
         user = self.get_user( username )
         response = self._call_api( 'users/{}/repos'.format( username ) )
-        for repo in response[0]:
+        for repo in self._get_paged( response ):
             yield repo
-        while None != response[1]:
-            response = self._call_api( response[1], relative=False )
-            for repo in response[0]:
-                yield repo
+
+    def get_gists( self, username ):
+        user = self.get_user( username )
+        response = self._call_api( 'users/{}/gists'.format( username ) )
+        for gist in self._get_paged( response ):
+            yield gist
 
 class LocalRepo( object ):
 
@@ -94,15 +100,22 @@ class LocalRepo( object ):
         self.logger.info( 'checking all remote repo branches...' )
         self.fetch_all_branches( owner, repo )
 
-def backup_repo( local, repo, logger ):
+def debug_print( struct ):
+
+    from pprint import PrettyPrinter
+    pp = PrettyPrinter()
+    pp.pprint( struct )
+
+def backup_repo( local, repo, logger, max_size ):
 
     owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
     logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
     logger.info( 'repo size: {}'.format( repo['size'] / 1024 ) )
 
-    #from pprint import PrettyPrinter
-    #pp = PrettyPrinter()
-    #pp.pprint( repo )
+    # Make sure the repo isn't too big.
+    if max_size and max_size <= (repo['size'] / 1024):
+        logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
+            repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
 
     # Make sure owner directory exists.
     owner_path = os.path.join( local.get_root(), repo['owner']['login'] )
@@ -114,23 +127,39 @@ def backup_repo( local, repo, logger ):
     local.create_or_update(
         repo['owner']['login'], repo['name'], repo['git_url'] )
 
+def backup_gist( local, gist, logger ):
+
+    owner_gist_path = os.path.join( gist['owner']['login'], gist['id'] )
+    logger.info( '{}'.format( owner_gist_path ) )
+
+    # Make sure owner directory exists.
+    owner_path = os.path.join( local.get_root(), gist['owner']['login'] )
+    if not os.path.exists( owner_path ):
+        logger.info(
+            'creating owner path for {}'.format( gist['owner']['login'] ) )
+        os.mkdir( owner_path )
+
+    local.create_or_update(
+        gist['owner']['login'], gist['id'], gist['git_pull_url'] )
+
 def backup_user_repos( git, local, username, max_size ):
     logger = logging.getLogger( 'user' )
     for repo in git.get_repos( username ):
-        if max_size and max_size <= (repo['size'] / 1024):
-            logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
-                repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
-            continue
-        backup_repo( local, repo, logger )
+        backup_repo( local, repo, logger, max_size )
 
 def backup_starred( git, local, username, max_size ):
     logger = logging.getLogger( 'starred' )
     for repo in git.get_starred( username ):
-        if max_size and max_size <= repo['size']:
-            logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
-                repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
+        backup_repo( local, repo, logger, max_size )
+
+def backup_gists( git, local, username, max_size ):
+    logger = logging.getLogger( 'gists' )
+    for gist in git.get_gists( username ):
+        if max_size and max_size <= gist['size']:
+            logger.warning( 'skipping gist {}/{} larger than {} ({})'.format(
+                repo['owner']['login'], repo['name'], max_size, gist['size'] ) )
             continue
-        backup_repo( local, repo, logger )
+        backup_gist( local, gist, logger )
 
 if '__main__' == __name__:
 
@@ -147,6 +176,8 @@ if '__main__' == __name__:
         help='Backup user repositories.' )
     parser.add_argument( '-m', '--max-size', type=int,
         help='Maximum repo size. Ignore repos larger than in MB.' )
+    parser.add_argument( '-g', '--gists', action='store_true',
+        help='Backup users gists.' )
 
     args = parser.parse_args()
 
@@ -170,4 +201,7 @@ if '__main__' == __name__:
 
     if args.repos:
         backup_user_repos( git, local, username, args.max_size )
+
+    if args.gists:
+        backup_gists( git, local, username, args.max_size )
 
