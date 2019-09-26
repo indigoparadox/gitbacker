@@ -57,12 +57,12 @@ class GitHub( object ):
         for repo in self._get_paged( response ):
             yield repo
 
-    def get_user_repos( self ):
+    def get_own_user_repos( self ):
         response = self._call_api( 'user/repos' )
         for repo in self._get_paged( response ):
             yield repo
 
-    def get_starred_gists( self ):
+    def get_own_starred_gists( self ):
         response = self._call_api( 'gists/starred' )
         for gist in self._get_paged( response ):
             yield gist
@@ -157,7 +157,7 @@ def backup_gist( local, gist, logger ):
 
 def backup_user_repos( git, local, max_size, topic ):
     logger = logging.getLogger( 'user-repos' )
-    for repo in git.get_user_repos():
+    for repo in git.get_own_user_repos():
         backup_repo( local, repo, logger, max_size, topic )
 
 def backup_starred_repos( git, local, username, max_size, topic ):
@@ -172,7 +172,7 @@ def backup_user_gists( git, local, username ):
 
 def backup_starred_gists( git, local ):
     logger = logging.getLogger( 'starred-gists' )
-    for gist in git.get_starred_gists():
+    for gist in git.get_own_starred_gists():
         backup_gist( local, gist, logger )
 
 if '__main__' == __name__:
