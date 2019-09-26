@@ -54,7 +54,13 @@ class GitHub( object ):
 
     def get_repos( self, username ):
         user = self.get_user( username )
-        return self._call_api( 'repos/{}'.format( username ) )[0]
+        response = self._call_api( 'users/{}/repos'.format( username ) )
+        for repo in response[0]:
+            yield repo
+        while None != response[1]:
+            response = self._call_api( response[1], relative=False )
+            for repo in response[0]:
+                yield repo
 
 class LocalRepo( object ):
 
@@ -110,8 +116,8 @@ def backup_repo( local, repo, logger ):
 
 def backup_user_repos( git, local, username, max_size ):
     logger = logging.getLogger( 'user' )
-    for repo in git.get_user_repos( username ):
-        if max_size <= (repo['size'] / 1024):
+    for repo in git.get_repos( username ):
+        if max_size and max_size <= (repo['size'] / 1024):
             logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
                 repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
             continue
@@ -120,7 +126,7 @@ def backup_user_repos( git, local, username, max_size ):
 def backup_starred( git, local, username, max_size ):
     logger = logging.getLogger( 'starred' )
     for repo in git.get_starred( username ):
-        if max_size <= repo['size']:
+        if max_size and max_size <= repo['size']:
             logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
                 repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
             continue
