@@ -100,6 +100,7 @@ class LocalRepo( object ):
         repo_dir = self.get_path( owner, repo )
         if not os.path.exists( repo_dir ):
             self.logger.info( 'creating local repo copy...' )
+            # So our stored credentials work.
             remote_url = remote_url.replace( 'git://', 'https://' )
             Repo.clone_from( remote_url, repo_dir, bare=True )
 
@@ -214,7 +215,7 @@ if '__main__' == __name__:
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
 
     if args.starred_repos:
-        backup_starred( git, local, username, args.max_size, args.topic )
+        backup_starred_repos( git, local, username, args.max_size, args.topic )
 
     if args.user_repos:
         backup_user_repos( git, local, args.max_size, args.topic )
