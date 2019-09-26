@@ -57,9 +57,8 @@ class GitHub( object ):
         for repo in self._get_paged( response ):
             yield repo
 
-    def get_user_repos( self, username ):
-        user = self.get_user( username )
-        response = self._call_api( 'users/{}/repos'.format( username ) )
+    def get_user_repos( self ):
+        response = self._call_api( 'user/repos' )
         for repo in self._get_paged( response ):
             yield repo
 
@@ -101,6 +100,7 @@ class LocalRepo( object ):
         repo_dir = self.get_path( owner, repo )
         if not os.path.exists( repo_dir ):
             self.logger.info( 'creating local repo copy...' )
+            remote_url = remote_url.replace( 'git://', 'https://' )
             Repo.clone_from( remote_url, repo_dir, bare=True )
 
         self.logger.info( 'checking all remote repo branches...' )
@@ -114,11 +114,12 @@ def debug_print( struct ):
 
 def backup_repo( local, repo, logger, max_size, topic ):
 
+    owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
+
     # Use topic if available.
     if topic and ('topics' not in repo or topic not in repo['topics']):
         return
 
-    owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
     logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
     logger.info( 'repo size: {}'.format( repo['size'] / 1024 ) )
 
@@ -153,9 +154,9 @@ def backup_gist( local, gist, logger ):
     local.create_or_update(
         gist['owner']['login'], gist['id'], gist['git_pull_url'] )
 
-def backup_user_repos( git, local, username, max_size, topic ):
+def backup_user_repos( git, local, max_size, topic ):
     logger = logging.getLogger( 'user-repos' )
-    for repo in git.get_user_repos( username ):
+    for repo in git.get_user_repos():
         backup_repo( local, repo, logger, max_size, topic )
 
 def backup_starred_repos( git, local, username, max_size, topic ):
@@ -216,7 +217,7 @@ if '__main__' == __name__:
         backup_starred( git, local, username, args.max_size, args.topic )
 
     if args.user_repos:
-        backup_user_repos( git, local, username, args.max_size, args.topic )
+        backup_user_repos( git, local, args.max_size, args.topic )
 
     if args.user_gists:
         backup_user_gists( git, local, username )
