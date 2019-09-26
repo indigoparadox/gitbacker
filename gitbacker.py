@@ -19,7 +19,7 @@ class GitHub( object ):
         self.username = username
         self.headers = {'Authorization': 'token {}'.format( token )}
 
-    def _call_api( self, path, relative=True, links=False ):
+    def _call_api( self, path, relative=True ):
         
         if relative:
             path = 'https://api.github.com/{}'.format( path )
@@ -28,7 +28,8 @@ class GitHub( object ):
         self.logger.info( 'calling {}'.format( path ) )
         r = requests.get( path, headers=self.headers )
 
-        if links:
+        # Parse links if available.
+        if 'link' in r.headers:
             rel_links = requests.utils.parse_header_links( r.headers['link'] )
             for link in rel_links:
                 if 'next' == link['rel']:
@@ -42,7 +43,13 @@ class GitHub( object ):
     def get_starred( self, username ):
         user = self.get_user( username )
         stars_url = re.sub( r'{.*}', '', user['starred_url'] )
-        return self._call_api( stars_url, relative=False, links=True )
+        response = self._call_api( stars_url, relative=False )
+        for repo in response[0]:
+            yield repo
+        while None != response[1]:
+            response = self._call_api( response[1], relative=False )
+            for repo in response[0]:
+                yield repo
 
     def get_repos( self, username ):
         user = self.get_user( username )
@@ -55,27 +62,27 @@ class LocalRepo( object ):
         self.root = root
         self.logger = logging.getLogger( 'localrepo' )
 
-    def get_path( self, repo ):
-        return os.path.join( self.root, '{}.git'.format( repo ) )
+    def get_path( self, owner, repo ):
+        return os.path.join( self.root, owner, '{}.git'.format( repo ) )
 
-    def fetch_all_branches( self, repo ):
-        repo_dir = self.get_path( repo )
+    def fetch_all_branches( self, owner, repo ):
+        repo_dir = self.get_path( owner, repo )
         r = Repo( repo_dir )
         branches = [b.name for b in r.branches]
         for remote in r.remotes:
             for branch in branches:
-                self.logger.info( 'checking {} branch: {}'.format(
-                    repo, branch ) )
+                self.logger.info( 'checking {}/{} branch: {}'.format(
+                    owner, repo, branch ) )
                 remote.fetch( branch )
 
-    def create_or_update( self, repo, remote_url ):
-        repo_dir = self.get_path( repo )
+    def create_or_update( self, owner, repo, remote_url ):
+        repo_dir = self.get_path( owner, repo )
         if not os.path.exists( repo_dir ):
             self.logger.info( 'creating local repo copy...' )
             Repo.clone_from( remote_url, repo_dir, bare=True )
-        else:
-            self.logger.info( 'checking remote repo for changes...' )
-            self.fetch_all_branches( repo )
+
+        self.logger.info( 'checking all remote repo branches...' )
+        self.fetch_all_branches( owner, repo )
 
 if '__main__' == __name__:
 
@@ -89,9 +96,17 @@ if '__main__' == __name__:
 
     git = GitHub( username, api_token )
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
-    starred = git.get_starred( username )
-    for repo in starred[0]:
-        logger.info( '{} ({})'.format( repo['name'], repo['id'] ) )
+    for repo in git.get_starred( username ):
+        owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
+        logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
 
-        local.create_or_update( repo['name'], repo['git_url'] )
+        owner_path = os.path.join( config.get( 'options', 'repo_dir' ),
+            repo['owner']['login'] )
+        if not os.path.exists( owner_path ):
+            logger.info(
+                'creating owner path for {}'.format( repo['owner']['login'] ) )
+            os.mkdir( owner_path )
+
+        local.create_or_update(
+            repo['owner']['login'], repo['name'], repo['git_url'] )
 
