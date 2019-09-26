@@ -62,6 +62,11 @@ class GitHub( object ):
         for repo in self._get_paged( response ):
             yield repo
 
+    def get_starred_gists( self ):
+        response = self._call_api( 'gists/starred' )
+        for gist in self._get_paged( response ):
+            yield gist
+
     def get_user_gists( self, username ):
         user = self.get_user( username )
         response = self._call_api( 'users/{}/gists'.format( username ) )
@@ -143,22 +148,23 @@ def backup_gist( local, gist, logger ):
         gist['owner']['login'], gist['id'], gist['git_pull_url'] )
 
 def backup_user_repos( git, local, username, max_size ):
-    logger = logging.getLogger( 'userrepos' )
+    logger = logging.getLogger( 'user-repos' )
     for repo in git.get_user_repos( username ):
         backup_repo( local, repo, logger, max_size )
 
 def backup_starred_repos( git, local, username, max_size ):
-    logger = logging.getLogger( 'starredrepos' )
+    logger = logging.getLogger( 'starred-repos' )
     for repo in git.get_starred_repos( username ):
         backup_repo( local, repo, logger, max_size )
 
-def backup_user_gists( git, local, username, max_size ):
-    logger = logging.getLogger( 'usergists' )
+def backup_user_gists( git, local, username ):
+    logger = logging.getLogger( 'user-gists' )
     for gist in git.get_user_gists( username ):
-        if max_size and max_size <= gist['size']:
-            logger.warning( 'skipping gist {}/{} larger than {} ({})'.format(
-                repo['owner']['login'], repo['name'], max_size, gist['size'] ) )
-            continue
+        backup_gist( local, gist, logger )
+
+def backup_starred_gists( git, local ):
+    logger = logging.getLogger( 'starred-gists' )
+    for gist in git.get_starred_gists():
         backup_gist( local, gist, logger )
 
 if '__main__' == __name__:
@@ -178,6 +184,8 @@ if '__main__' == __name__:
         help='Maximum repo size. Ignore repos larger than in MB.' )
     parser.add_argument( '-g', '--user-gists', action='store_true',
         help='Backup users gists.' )
+    parser.add_argument( '-f', '--starred-gists', action='store_true',
+        help='Backup authenticated user\'s starred gists.' )
 
     args = parser.parse_args()
 
@@ -203,5 +211,8 @@ if '__main__' == __name__:
         backup_user_repos( git, local, username, args.max_size )
 
     if args.user_gists:
-        backup_user_gists( git, local, username, args.max_size )
+        backup_user_gists( git, local, username )
+
+    if args.starred_gists:
+        backup_starred_gists( git, local )
 
