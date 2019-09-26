@@ -18,7 +18,8 @@ class GitHub( object ):
 
         self.logger = logging.getLogger( 'github' )
         self.username = username
-        self.headers = {'Authorization': 'token {}'.format( token )}
+        self.headers = { 'Authorization': 'token {}'.format( token ),
+            'Accept': 'application/vnd.github.mercy-preview+json' }
 
     def _call_api( self, path, relative=True ):
         
@@ -111,7 +112,11 @@ def debug_print( struct ):
     pp = PrettyPrinter()
     pp.pprint( struct )
 
-def backup_repo( local, repo, logger, max_size ):
+def backup_repo( local, repo, logger, max_size, topic ):
+
+    # Use topic if available.
+    if topic and ('topics' not in repo or topic not in repo['topics']):
+        return
 
     owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
     logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
@@ -119,8 +124,9 @@ def backup_repo( local, repo, logger, max_size ):
 
     # Make sure the repo isn't too big.
     if max_size and max_size <= (repo['size'] / 1024):
-        logger.warning( 'skipping repo {}/{} larger than {} ({})'.format(
-            repo['owner']['login'], repo['name'], max_size, repo['size'] ) )
+        logger.warning( 'skipping repo {} larger than {} ({})'.format(
+            owner_repo_path, max_size, repo['size'] ) )
+        return
 
     # Make sure owner directory exists.
     owner_path = os.path.join( local.get_root(), repo['owner']['login'] )
@@ -147,15 +153,15 @@ def backup_gist( local, gist, logger ):
     local.create_or_update(
         gist['owner']['login'], gist['id'], gist['git_pull_url'] )
 
-def backup_user_repos( git, local, username, max_size ):
+def backup_user_repos( git, local, username, max_size, topic ):
     logger = logging.getLogger( 'user-repos' )
     for repo in git.get_user_repos( username ):
-        backup_repo( local, repo, logger, max_size )
+        backup_repo( local, repo, logger, max_size, topic )
 
-def backup_starred_repos( git, local, username, max_size ):
+def backup_starred_repos( git, local, username, max_size, topic ):
     logger = logging.getLogger( 'starred-repos' )
     for repo in git.get_starred_repos( username ):
-        backup_repo( local, repo, logger, max_size )
+        backup_repo( local, repo, logger, max_size, topic )
 
 def backup_user_gists( git, local, username ):
     logger = logging.getLogger( 'user-gists' )
@@ -186,6 +192,8 @@ if '__main__' == __name__:
         help='Backup user gists.' )
     parser.add_argument( '-f', '--starred-gists', action='store_true',
         help='Backup authenticated user\'s starred gists.' )
+    parser.add_argument( '-t', '--topic', action='store',
+        help='Only backup repositories with the given topic attached.' )
 
     args = parser.parse_args()
 
@@ -205,10 +213,10 @@ if '__main__' == __name__:
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
 
     if args.starred_repos:
-        backup_starred( git, local, username, args.max_size )
+        backup_starred( git, local, username, args.max_size, args.topic )
 
     if args.user_repos:
-        backup_user_repos( git, local, username, args.max_size )
+        backup_user_repos( git, local, username, args.max_size, args.topic )
 
     if args.user_gists:
         backup_user_gists( git, local, username )
