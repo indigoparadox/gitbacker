@@ -19,7 +19,7 @@ class GitHub( object ):
         self.username = username
         self.headers = {'Authorization': 'token {}'.format( token )}
 
-    def _call_api( self, path, relative=True ):
+    def _call_api( self, path, relative=True, links=False ):
         
         if relative:
             path = 'https://api.github.com/{}'.format( path )
@@ -28,19 +28,25 @@ class GitHub( object ):
         self.logger.info( 'calling {}'.format( path ) )
         r = requests.get( path, headers=self.headers )
 
-        return r.json()
+        if links:
+            rel_links = requests.utils.parse_header_links( r.headers['link'] )
+            for link in rel_links:
+                if 'next' == link['rel']:
+                    return r.json(), link['url']
+
+        return r.json(), None
 
     def get_user( self, username ):
-        return self._call_api( 'users/{}'.format( username ) )
+        return self._call_api( 'users/{}'.format( username ) )[0]
 
     def get_starred( self, username ):
         user = self.get_user( username )
         stars_url = re.sub( r'{.*}', '', user['starred_url'] )
-        return self._call_api( stars_url, relative=False )
+        return self._call_api( stars_url, relative=False, links=True )
 
     def get_repos( self, username ):
         user = self.get_user( username )
-        return self._call_api( 'repos/{}'.format( username ) )
+        return self._call_api( 'repos/{}'.format( username ) )[0]
 
 class LocalRepo( object ):
 
@@ -83,8 +89,9 @@ if '__main__' == __name__:
 
     git = GitHub( username, api_token )
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
-    for repo in git.get_starred( username ):
-        logger.info(  '{} ({})'.format( repo['name'], repo['id'] ) )
+    starred = git.get_starred( username )
+    for repo in starred[0]:
+        logger.info( '{} ({})'.format( repo['name'], repo['id'] ) )
 
         local.create_or_update( repo['name'], repo['git_url'] )
 
