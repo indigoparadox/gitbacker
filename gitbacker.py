@@ -97,7 +97,7 @@ class LocalRepo( object ):
                 try:
                     remote.fetch( branch )
                 except Exception as e:
-                    self.logger.error( e )
+                    self.logger.error( '{}: {}'.format( repo, e ) )
 
     def create_or_update( self, owner, repo, remote_url ):
         repo_dir = self.get_path( owner, repo )
