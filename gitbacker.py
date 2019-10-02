@@ -12,7 +12,7 @@ try:
     from configparser import ConfigParser
 except ImportError:
     from ConfigParser import ConfigParser
-from git import Repo
+from git import Repo, Remote
 
 class GitHub( object ):
 
@@ -193,6 +193,12 @@ def backup_user_repos( git, local, max_size, topic, udir, redo, uname, uemail ):
             for line in git_std:
                 if line:
                     logger.info( '{}: {}'.format( repo['name'], line.strip() ) )
+
+            # Prune all remotes to sterilize.
+            r = Repo( repo_dir )
+            for remote in r.remotes:
+                Remote.remove( r, remote.name )
+            
 
 def backup_starred_repos( git, local, username, max_size, topic ):
     logger = logging.getLogger( 'starred-repos' )
