@@ -5,6 +5,8 @@ import json
 import logging
 import re
 import os
+import shutil
+import subprocess
 from argparse import ArgumentParser
 try:
     from configparser import ConfigParser
@@ -83,11 +85,14 @@ class LocalRepo( object ):
     def get_root( self ):
         return self._root
 
-    def get_path( self, owner, repo ):
-        return os.path.join( self._root, owner, '{}.git'.format( repo ) )
+    def get_path( self, repo, owner=None ):
+        if owner:
+            return os.path.join( self._root, owner, '{}.git'.format( repo ) )
+        else:
+            return os.path.join( self._root, '{}.git'.format( repo ) )
 
     def fetch_all_branches( self, owner, repo ):
-        repo_dir = self.get_path( owner, repo )
+        repo_dir = self.get_path( repo, owner )
         r = Repo( repo_dir )
         branches = [b.name for b in r.branches]
         for remote in r.remotes:
@@ -99,8 +104,9 @@ class LocalRepo( object ):
                 except Exception as e:
                     self.logger.error( '{}: {}'.format( repo, e ) )
 
-    def create_or_update( self, owner, repo, remote_url ):
-        repo_dir = self.get_path( owner, repo )
+    def create_or_update( self, repo, remote_url, owner=None ):
+        repo_dir = self.get_path( repo, owner )
+
         if not os.path.exists( repo_dir ):
             self.logger.info( 'creating local repo copy...' )
             # So our stored credentials work.
@@ -110,38 +116,43 @@ class LocalRepo( object ):
         self.logger.info( 'checking all remote repo branches...' )
         self.fetch_all_branches( owner, repo )
 
+        # TODO: Handle failures.
+        return True
+
 def debug_print( struct ):
 
     from pprint import PrettyPrinter
     pp = PrettyPrinter()
     pp.pprint( struct )
 
-def backup_repo( local, repo, logger, max_size, topic ):
+def backup_repo( local, repo, logger, max_size, topic, owner=None ):
 
-    owner_repo_path = os.path.join( repo['owner']['login'], repo['name'] )
+    if owner:
+        working_repo_path = os.path.join( owner, repo['name'] )
+    else:
+        working_repo_path = repo['name']
 
     # Use topic if available.
     if topic and ('topics' not in repo or topic not in repo['topics']):
-        return
+        return False
 
-    logger.info( '{} ({})'.format( owner_repo_path, repo['id'] ) )
+    logger.info( '{} ({})'.format( working_repo_path, repo['id'] ) )
     logger.info( 'repo size: {}'.format( repo['size'] / 1024 ) )
 
     # Make sure the repo isn't too big.
     if max_size and max_size <= (repo['size'] / 1024):
         logger.warning( 'skipping repo {} larger than {} ({})'.format(
-            owner_repo_path, max_size, repo['size'] ) )
-        return
+            working_repo_path, max_size, repo['size'] ) )
+        return False
 
     # Make sure owner directory exists.
-    owner_path = os.path.join( local.get_root(), repo['owner']['login'] )
-    if not os.path.exists( owner_path ):
-        logger.info(
-            'creating owner path for {}'.format( repo['owner']['login'] ) )
-        os.mkdir( owner_path )
+    if owner:
+        owner_path = os.path.join( local.get_root(), owner )
+        if not os.path.exists( owner_path ):
+            logger.info( 'creating owner path for {}'.format( owner ) )
+            os.mkdir( owner_path )
 
-    local.create_or_update(
-        repo['owner']['login'], repo['name'], repo['git_url'] )
+    return local.create_or_update( repo['name'], repo['git_url'], owner)
 
 def backup_gist( local, gist, logger ):
 
@@ -156,17 +167,32 @@ def backup_gist( local, gist, logger ):
         os.mkdir( owner_path )
 
     local.create_or_update(
-        gist['owner']['login'], gist['id'], gist['git_pull_url'] )
+        gist['id'], gist['git_pull_url'], gist['owner']['login'] )
 
-def backup_user_repos( git, local, max_size, topic ):
+def backup_user_repos( git, local, max_size, topic, udir, redo, uname, uemail ):
     logger = logging.getLogger( 'user-repos' )
     for repo in git.get_own_user_repos():
-        backup_repo( local, repo, logger, max_size, topic )
+
+        repo_dir = local.get_path( repo['name'] )
+        if udir:
+            repo_dir = local.get_path( repo, repo['owner']['login'] )
+
+        if os.path.exists( repo_dir ) and redo:
+            # Remove the repo dir so it can be re-created.
+            shutil.rmtree( repo_dir )
+
+        res = backup_repo( local, repo, logger, max_size, topic,
+            repo['owner']['login'] if udir else None )
+
+        if res and uname and uemail:
+            cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), 'HEAD']
+            proc = subprocess.Popen( cmd, cwd=repo_dir )
 
 def backup_starred_repos( git, local, username, max_size, topic ):
     logger = logging.getLogger( 'starred-repos' )
     for repo in git.get_starred_repos( username ):
-        backup_repo( local, repo, logger, max_size, topic )
+        backup_repo(
+            local, repo, logger, max_size, topic, repo['owner']['login'] )
 
 def backup_user_gists( git, local, username ):
     logger = logging.getLogger( 'user-gists' )
@@ -199,6 +225,14 @@ if '__main__' == __name__:
         help='Backup authenticated user\'s starred gists.' )
     parser.add_argument( '-t', '--topic', action='store',
         help='Only backup repositories with the given topic attached.' )
+    parser.add_argument( '-x', '--redo', action='store_true',
+        help='Remove existing repos and re-clone.' )
+    parser.add_argument( '-e', '--email', action='store',
+        help='Change the e-mail on commits to downloaded repos (implies -x).' )
+    parser.add_argument( '-n', '--name', action='store',
+        help='Change the name on commits to downloaded repos (implies -x).' )
+    parser.add_argument( '-w', '--without-user', action='store',
+        help='Do not place repos in user subdirectory.' )
 
     args = parser.parse_args()
 
@@ -213,15 +247,22 @@ if '__main__' == __name__:
     config.read( args.config )
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
+    redo = False
 
     git = GitHub( username, api_token )
     local = LocalRepo( config.get( 'options', 'repo_dir' ) )
+
+    if args.name or args.email or args.redo:
+        logger.info( 'Redo enabled.' )
+        redo = True
 
     if args.starred_repos:
         backup_starred_repos( git, local, username, args.max_size, args.topic )
 
     if args.user_repos:
-        backup_user_repos( git, local, args.max_size, args.topic )
+        backup_user_repos(
+            git, local, args.max_size, args.topic, args.without_user,
+            redo, args.name, args.email )
 
     if args.user_gists:
         backup_user_gists( git, local, username )
