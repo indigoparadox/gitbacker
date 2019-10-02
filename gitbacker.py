@@ -184,9 +184,15 @@ def backup_user_repos( git, local, max_size, topic, udir, redo, uname, uemail ):
         res = backup_repo( local, repo, logger, max_size, topic,
             repo['owner']['login'] if udir else None )
 
+        # Change author/committer ID information if specified.
         if res and uname and uemail:
-            cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), 'HEAD']
-            proc = subprocess.Popen( cmd, cwd=repo_dir )
+            cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), '--', '--all']
+            proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
+
+            git_std = proc.communicate()
+            for line in git_std:
+                if line:
+                    logger.info( '{}: {}'.format( repo['name'], line.strip() ) )
 
 def backup_starred_repos( git, local, username, max_size, topic ):
     logger = logging.getLogger( 'starred-repos' )
