@@ -42,7 +42,9 @@ class GitHub( object ):
         return {'json': r.json(), 'next': None}
 
     def get_user( self, username ):
-        return self._call_api( 'users/{}'.format( username ) )['json']
+        res = self._call_api( 'users/{}'.format( username ) )['json']
+        self.logger.debug( res )
+        return res
 
     def _get_paged( self, response ):
         for repo in response['json']:
@@ -225,6 +227,8 @@ if '__main__' == __name__:
         help='Path to the config file to load.' )
     parser.add_argument( '-q', '--quiet', action='store_true',
         help='Quiet mode.' )
+    parser.add_argument( '-v', '--verbose', action='store_true',
+        help='Verbose mode.' )
     parser.add_argument( '-s', '--starred-repos', action='store_true',
         help='Backup starred repositories.' )
     parser.add_argument( '-r', '--user-repos', action='store_true',
@@ -250,6 +254,8 @@ if '__main__' == __name__:
 
     if args.quiet:
         logging.basicConfig( level=logging.WARNING )
+    elif args.verbose:
+        logging.basicConfig( level=logging.DEBUG )
     else:
         logging.basicConfig( level=logging.INFO )
     logger = logging.getLogger( 'main' )
