@@ -2,3 +2,4 @@ repos
 gitbacker.ini
 *.swp
 *.pyc
+venv
