@@ -96,7 +96,11 @@ class LocalRepo( object ):
     def fetch_all_branches( self, owner, repo ):
         repo_dir = self.get_path( repo, owner )
         r = Repo( repo_dir )
-        branches = [b.name for b in r.branches]
+        branches = []
+        try:
+            branches = [b.name for b in r.branches]
+        except UnicodeDecodeError as e:
+            self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in r.remotes:
             for branch in branches:
                 self.logger.info( 'checking {}/{} branch: {}'.format(
