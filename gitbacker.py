@@ -7,21 +7,83 @@ import re
 import os
 import shutil
 import subprocess
+import sqlite3
 from argparse import ArgumentParser
+from smtplib import SMTP
 try:
     from configparser import ConfigParser
 except ImportError:
     from ConfigParser import ConfigParser
 from git import Repo, Remote
+import git.exc
+
+class GitHubRepo( object ):
+
+    def __init__( self, repo_json, topic_filter=None, max_size=None ):
+        self._repo = repo_json
+        self.topic_filter = topic_filter
+        self.max_size = max_size
+        for key in repo_json:
+            setattr( self, key, repo_json[key] )
+        self.owner = repo_json['owner']['login']
+        self.logger = logging.getLogger( 'github.repo' )
+
+    def backup( self, local ):
+
+        working_repo_path = os.path.join( self.owner, self.name )
+
+        # If a topic arg was specified, only backup repos with that topic.
+        if self.topic_filter and \
+        ('topics' not in repo or self.topic_filter not in self.topics):
+            return False
+
+        self.logger.info( '{} ({})'.format( working_repo_path, self.id ) )
+        self.logger.info( 'repo size: {}'.format( self.size / 1024 ) )
+
+        # Make sure the repo isn't too big.
+        if self.max_size and self.max_size <= (self.size / 1024):
+            self.logger.warning(
+                'skipping repo {} larger than {} ({})'.format(
+                working_repo_path, max_size, self.size ) )
+            return False
+
+        # Make sure owner directory exists.
+        owner_path = os.path.join( local.get_root(), self.owner )
+        if not os.path.exists( owner_path ):
+            self.logger.info(
+                'creating owner path for {}'.format( self.owner ) )
+            os.mkdir( owner_path )
+
+        local.create_or_update( self.name, self.git_url, self.owner )
+        local.update_metadata( self )
+
+class GitHubGist( GitHubRepo ):
+
+    def backup( self, local ):
+
+        owner_gist_path = os.path.join( self.owner, self.id )
+        self.logger.info( '{}'.format( owner_gist_path ) )
+
+        # Make sure owner directory exists.
+        owner_path = os.path.join( local.get_root(), self.owner )
+        if not os.path.exists( owner_path ):
+            logger.info(
+                'creating owner path for {}'.format( self.owner ) )
+            os.mkdir( owner_path )
+
+        local.create_or_update( self.id, self.git_pull_url, self.owner )
+        local.update_metadata( self )
 
 class GitHub( object ):
 
-    def __init__( self, username, token ):
+    def __init__( self, username, token, topic_filter, max_size ):
 
         self.logger = logging.getLogger( 'github' )
         self.username = username
         self.headers = { 'Authorization': 'token {}'.format( token ),
             'Accept': 'application/vnd.github.mercy-preview+json' }
+        self.topic_filter = topic_filter
+        self.max_size = max_size
 
     def _call_api( self, path, relative=True ):
         
@@ -59,29 +121,30 @@ class GitHub( object ):
         stars_url = re.sub( r'{.*}', '', user['starred_url'] )
         response = self._call_api( stars_url, relative=False )
         for repo in self._get_paged( response ):
-            yield repo
+            yield GitHubRepo( repo, self.topic_filter, self.max_size )
 
     def get_own_user_repos( self ):
         response = self._call_api( 'user/repos' )
         for repo in self._get_paged( response ):
-            yield repo
+            yield GitHubRepo( repo, self.topic_filter, self.max_size )
 
     def get_own_starred_gists( self ):
         response = self._call_api( 'gists/starred' )
         for gist in self._get_paged( response ):
-            yield gist
+            yield GitHubGist( gist, self.topic_filter, self.max_size )
 
     def get_user_gists( self, username ):
         user = self.get_user( username )
         response = self._call_api( 'users/{}/gists'.format( username ) )
         for gist in self._get_paged( response ):
-            yield gist
+            yield GitHubGist( gist, self.topic_filter, self.max_size )
 
 class LocalRepo( object ):
 
-    def __init__( self, root ):
+    def __init__( self, root, db_conn ):
 
         self._root = root
+        self._db_conn = db_conn
         self.logger = logging.getLogger( 'localrepo' )
 
     def get_root( self ):
@@ -110,20 +173,45 @@ class LocalRepo( object ):
                 except Exception as e:
                     self.logger.error( '{}: {}'.format( repo, e ) )
 
+    def update_metadata( self, repo ):
+
+        cur = self._db_conn.cursor()
+        cur.execute(
+            'INSERT INTO repos(owner, name, repo_id, topics) ' +
+            'VALUES (?, ?, ?, ?)',
+            (repo.owner, repo.name, repo.id, str( repo.topics )) )
+        self._db_conn.commit()
+
     def create_or_update( self, repo, remote_url, owner=None ):
         repo_dir = self.get_path( repo, owner )
+        try_count = 3
 
         if not os.path.exists( repo_dir ):
-            self.logger.info( 'creating local repo copy...' )
-            # So our stored credentials work.
-            remote_url = remote_url.replace( 'git://', 'https://' )
-            Repo.clone_from( remote_url, repo_dir, bare=True )
+            while 0 < try_count:
+                try:
+                    self.logger.info( 'creating local repo copy...' )
+                    # So our stored credentials work.
+                    remote_url = remote_url.replace( 'git://', 'https://' )
+                    Repo.clone_from( remote_url, repo_dir, bare=True )
+                    try_count = 0
+                except git.exc.GitCommandError as e:
+                    self.logger.error( 'error cloning; retrying...' )
+                    try_count -= 1
+                    shutil.rmtree( repo_dir )
+                    if 0 >= try_count:
+                        raise Exception( 'clone failed!' )
 
         self.logger.info( 'checking all remote repo branches...' )
-        self.fetch_all_branches( owner, repo )
-
-        # TODO: Handle failures.
-        return True
+        try_count = 3
+        while 0 < try_count:
+            try:
+                self.fetch_all_branches( owner, repo )
+                try_count = 0
+            except git.exc.GitCommandError as e:
+                self.logger.error( 'error fetching; retrying...' )
+                try_count -= 1
+                if 0 >= try_count:
+                    raise Exception( 'fetch failed!' )
 
 def debug_print( struct ):
 
@@ -131,64 +219,21 @@ def debug_print( struct ):
     pp = PrettyPrinter()
     pp.pprint( struct )
 
-def backup_repo( local, repo, logger, max_size, topic, owner=None ):
+def backup_user_repos( git, local, redo, uname, uemail ):
 
-    if owner:
-        working_repo_path = os.path.join( owner, repo['name'] )
-    else:
-        working_repo_path = repo['name']
+    ''' Backup all repos for the github user this script is accessing the
+    API as, to the directory repo_dir/user_name. '''
 
-    # Use topic if available.
-    if topic and ('topics' not in repo or topic not in repo['topics']):
-        return False
-
-    logger.info( '{} ({})'.format( working_repo_path, repo['id'] ) )
-    logger.info( 'repo size: {}'.format( repo['size'] / 1024 ) )
-
-    # Make sure the repo isn't too big.
-    if max_size and max_size <= (repo['size'] / 1024):
-        logger.warning( 'skipping repo {} larger than {} ({})'.format(
-            working_repo_path, max_size, repo['size'] ) )
-        return False
-
-    # Make sure owner directory exists.
-    if owner:
-        owner_path = os.path.join( local.get_root(), owner )
-        if not os.path.exists( owner_path ):
-            logger.info( 'creating owner path for {}'.format( owner ) )
-            os.mkdir( owner_path )
-
-    return local.create_or_update( repo['name'], repo['git_url'], owner)
-
-def backup_gist( local, gist, logger ):
-
-    owner_gist_path = os.path.join( gist['owner']['login'], gist['id'] )
-    logger.info( '{}'.format( owner_gist_path ) )
-
-    # Make sure owner directory exists.
-    owner_path = os.path.join( local.get_root(), gist['owner']['login'] )
-    if not os.path.exists( owner_path ):
-        logger.info(
-            'creating owner path for {}'.format( gist['owner']['login'] ) )
-        os.mkdir( owner_path )
-
-    local.create_or_update(
-        gist['id'], gist['git_pull_url'], gist['owner']['login'] )
-
-def backup_user_repos( git, local, max_size, topic, udir, redo, uname, uemail ):
-    logger = logging.getLogger( 'user-repos' )
+    count = 0
+    logger = logging.getLogger( 'repos.user' )
     for repo in git.get_own_user_repos():
 
-        repo_dir = local.get_path( repo['name'] )
-        if udir:
-            repo_dir = local.get_path( repo, repo['owner']['login'] )
-
+        repo_dir = local.get_path( repo.name )
         if os.path.exists( repo_dir ) and redo:
             # Remove the repo dir so it can be re-created.
             shutil.rmtree( repo_dir )
 
-        res = backup_repo( local, repo, logger, max_size, topic,
-            repo['owner']['login'] if udir else None )
+        res = repo.backup( local )
 
         # Change author/committer ID information if specified.
         if res and uname and uemail:
@@ -198,29 +243,47 @@ def backup_user_repos( git, local, max_size, topic, udir, redo, uname, uemail ):
             git_std = proc.communicate()
             for line in git_std:
                 if line:
-                    logger.info( '{}: {}'.format( repo['name'], line.strip() ) )
+                    logger.info( '{}: {}'.format( repo.name, line.strip() ) )
 
             # Prune all remotes to sterilize.
             r = Repo( repo_dir )
             for remote in r.remotes:
                 Remote.remove( r, remote.name )
-            
 
-def backup_starred_repos( git, local, username, max_size, topic ):
-    logger = logging.getLogger( 'starred-repos' )
+        count += 1
+
+    return count
+
+def backup_starred_repos( git, local, username ):
+    count = 0
+    logger = logging.getLogger( 'repos.starred' )
     for repo in git.get_starred_repos( username ):
-        backup_repo(
-            local, repo, logger, max_size, topic, repo['owner']['login'] )
+        repo.backup( local )
+    return count
 
 def backup_user_gists( git, local, username ):
-    logger = logging.getLogger( 'user-gists' )
+    count = 0
+    logger = logging.getLogger( 'gists.user' )
     for gist in git.get_user_gists( username ):
-        backup_gist( local, gist, logger )
+        gist.backup( local )
+        count += 1
+    return count
 
 def backup_starred_gists( git, local ):
-    logger = logging.getLogger( 'starred-gists' )
+    count = 0
+    logger = logging.getLogger( 'gists.starred' )
     for gist in git.get_own_starred_gists():
-        backup_gist( local, gist, logger )
+        gist.backup( local )
+    return count
+
+def notify_smtp( host, to_addr, from_addr, subject, body ):
+
+    msg = ('From {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}'.format(
+        from_addr, to_addr, subject, body ) )
+
+    smtp = SMTP( host )
+    smtp.sendmail( from_addr, [to_addr], msg )
+    smtp.quit()
 
 if '__main__' == __name__:
 
@@ -251,8 +314,6 @@ if '__main__' == __name__:
         help='Change the e-mail on commits to downloaded repos (implies -x).' )
     parser.add_argument( '-n', '--name', action='store',
         help='Change the name on commits to downloaded repos (implies -x).' )
-    parser.add_argument( '-w', '--without-user', action='store',
-        help='Do not place repos in user subdirectory.' )
 
     args = parser.parse_args()
 
@@ -269,26 +330,87 @@ if '__main__' == __name__:
     config.read( args.config )
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
+    db_path = config.get( 'options', 'db_path' )
     redo = False
 
-    git = GitHub( username, api_token )
-    local = LocalRepo( config.get( 'options', 'repo_dir' ) )
+    # TODO: Summarize, notify on failure.
 
-    if args.name or args.email or args.redo:
-        logger.info( 'Redo enabled.' )
-        redo = True
+    with sqlite3.connect( db_path ) as db_conn:
 
-    if args.starred_repos:
-        backup_starred_repos( git, local, username, args.max_size, args.topic )
+        cur = db_conn.cursor()
+        cur.execute( '''CREATE TABLE IF NOT EXISTS repos (
+            id INTEGER PRIMARY KEY,
+            owner TEXT NOT NULL,
+            name TEXT NOT NULL,
+            repo_id TEXT NOT NULL,
+            topics TEXT NOT NULL )
+        ''' )
+        db_conn.commit()
 
-    if args.user_repos:
-        backup_user_repos(
-            git, local, args.max_size, args.topic, args.without_user,
-            redo, args.name, args.email )
+        git = GitHub( username, api_token, args.topic, args.max_size )
+        local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
 
-    if args.user_gists:
-        backup_user_gists( git, local, username )
+        if args.name or args.email or args.redo:
+            logger.info( 'Redo enabled.' )
+            redo = True
 
-    if args.starred_gists:
-        backup_starred_gists( git, local )
+        error_cond = False
+        repos_count = 0
+
+        if args.starred_repos:
+            try:
+                repos_count += backup_starred_repos( git, local, username )
+            except Exception as e:
+                error_cond = True
+                notify_smtp(
+                    config.get( 'notify', 'smtp_host' ),
+                    config.get( 'notify', 'smtp_to' ),
+                    config.get( 'notify', 'smtp_from' ),
+                    '[gitbacker] ERROR',
+                    str( e ) )
+
+        if args.user_repos:
+            try:
+                repos_count += backup_user_repos(
+                    git, local, redo, args.name, args.email )
+            except Exception as e:
+                error_cond = True
+                notify_smtp(
+                    config.get( 'notify', 'smtp_host' ),
+                    config.get( 'notify', 'smtp_to' ),
+                    config.get( 'notify', 'smtp_from' ),
+                    '[gitbacker] ERROR',
+                    str( e ) )
+
+        if args.user_gists:
+            try:
+                repos_count += backup_user_gists( git, local, username )
+            except Exception as e:
+                error_cond = True
+                notify_smtp(
+                    config.get( 'notify', 'smtp_host' ),
+                    config.get( 'notify', 'smtp_to' ),
+                    config.get( 'notify', 'smtp_from' ),
+                    '[gitbacker] ERROR',
+                    str( e ) )
+
+        if args.starred_gists:
+            try:
+                repos_count += backup_starred_gists( git, local )
+            except Exception as e:
+                error_cond = True
+                notify_smtp(
+                    config.get( 'notify', 'smtp_host' ),
+                    config.get( 'notify', 'smtp_to' ),
+                    config.get( 'notify', 'smtp_from' ),
+                    '[gitbacker] ERROR',
+                    str( e ) )
+
+        if not error_cond:
+            notify_smtp(
+                config.get( 'notify', 'smtp_host' ),
+                config.get( 'notify', 'smtp_to' ),
+                config.get( 'notify', 'smtp_from' ),
+                '[gitbacker] Backed up {} repos OK'.format( repos_count ),
+                'Backed up {} repos OK'.format( repos_count ) )
 
