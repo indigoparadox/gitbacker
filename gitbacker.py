@@ -15,7 +15,7 @@ try:
 except ImportError:
     from ConfigParser import ConfigParser
 from git import Repo, Remote
-import git.exc
+from git.exc import GitCommandError
 
 class GitHubRepo( object ):
 
@@ -194,7 +194,7 @@ class LocalRepo( object ):
                     remote_url = remote_url.replace( 'git://', 'https://' )
                     Repo.clone_from( remote_url, repo_dir, bare=True )
                     try_count = 0
-                except git.exc.GitCommandError as e:
+                except GitCommandError as e:
                     self.logger.error( 'error cloning; retrying...' )
                     try_count -= 1
                     shutil.rmtree( repo_dir )
@@ -207,7 +207,7 @@ class LocalRepo( object ):
             try:
                 self.fetch_all_branches( owner, repo )
                 try_count = 0
-            except git.exc.GitCommandError as e:
+            except GitCommandError as e:
                 self.logger.error( 'error fetching; retrying...' )
                 try_count -= 1
                 if 0 >= try_count:
