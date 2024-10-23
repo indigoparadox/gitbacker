@@ -8,6 +8,7 @@ import os
 import shutil
 import subprocess
 import sqlite3
+import traceback
 from argparse import ArgumentParser
 from smtplib import SMTP
 try:
@@ -232,6 +233,10 @@ class Notifier( object ):
         smtp.sendmail( self.from_addr, [self.to_addr], msg )
         smtp.quit()
 
+    def send_exc( self, subject, e ):
+
+        self.send( subject, traceback.format_exc() )
+
 def debug_print( struct ):
 
     from pprint import PrettyPrinter
@@ -310,7 +315,8 @@ def backup_all( git, local, username, args, notifier ):
             repos_count += backup_starred_repos( git, local, username )
         except Exception as e:
             error_cond = True
-            notifier.send( '[gitbacker] ERROR', str( e ) )
+            notifier.send_exc( '[gitbacker] ERROR during starred_repos', e )
+            logger.exception( e )
 
     if args.user_repos:
         try:
@@ -318,21 +324,24 @@ def backup_all( git, local, username, args, notifier ):
                 git, local, redo, args.name, args.email )
         except Exception as e:
             error_cond = True
-            notifier.send( '[gitbacker] ERROR', str( e ) )
+            notifier.send_exc( '[gitbacker] ERROR during user_repos', e )
+            logger.exception( e )
 
     if args.user_gists:
         try:
             repos_count += backup_user_gists( git, local, username )
         except Exception as e:
             error_cond = True
-            notifier.send( '[gitbacker] ERROR', str( e ) )
+            notifier.send_exc( '[gitbacker] ERROR during user_gists', e )
+            logger.exception( e )
 
     if args.starred_gists:
         try:
             repos_count += backup_starred_gists( git, local )
         except Exception as e:
             error_cond = True
-            notifier.send( '[gitbacker] ERROR', str( e ) )
+            notifier.send_exc( '[gitbacker] ERROR during starred_gists', e )
+            logger.exception( e )
 
     if not error_cond:
         notifier.send(
