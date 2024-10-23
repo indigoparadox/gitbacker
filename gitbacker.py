@@ -175,6 +175,9 @@ class LocalRepo( object ):
 
     def update_metadata( self, repo ):
 
+        if not self._db_conn:
+            return
+
         cur = self._db_conn.cursor()
         cur.execute(
             'INSERT INTO repos(owner, name, repo_id, topics) ' +
@@ -212,6 +215,22 @@ class LocalRepo( object ):
                 try_count -= 1
                 if 0 >= try_count:
                     raise Exception( 'fetch failed!' )
+
+class Notifier( object ):
+
+    def __init__( self, host, to_addr, from_addr ):
+        self.host = host
+        self.to_addr = to_addr
+        self.from_addr = from_addr
+
+    def send( self, subject, body ):
+
+        msg = ('From {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}'.format(
+            self.from_addr, self.to_addr, subject, body ) )
+
+        smtp = SMTP( self.host )
+        smtp.sendmail( self.from_addr, [self.to_addr], msg )
+        smtp.quit()
 
 def debug_print( struct ):
 
@@ -276,14 +295,49 @@ def backup_starred_gists( git, local ):
         gist.backup( local )
     return count
 
-def notify_smtp( host, to_addr, from_addr, subject, body ):
+def backup_all( git, local, username, args, notifier ):
 
-    msg = ('From {}\r\nTo: {}\r\nSubject: {}\r\n\r\n{}'.format(
-        from_addr, to_addr, subject, body ) )
+    error_cond = False
+    repos_count = 0
+    redo = False
 
-    smtp = SMTP( host )
-    smtp.sendmail( from_addr, [to_addr], msg )
-    smtp.quit()
+    if args.name or args.email or args.redo:
+        logger.info( 'Redo enabled.' )
+        redo = True
+
+    if args.starred_repos:
+        try:
+            repos_count += backup_starred_repos( git, local, username )
+        except Exception as e:
+            error_cond = True
+            notifier.send( '[gitbacker] ERROR', str( e ) )
+
+    if args.user_repos:
+        try:
+            repos_count += backup_user_repos(
+                git, local, redo, args.name, args.email )
+        except Exception as e:
+            error_cond = True
+            notifier.send( '[gitbacker] ERROR', str( e ) )
+
+    if args.user_gists:
+        try:
+            repos_count += backup_user_gists( git, local, username )
+        except Exception as e:
+            error_cond = True
+            notifier.send( '[gitbacker] ERROR', str( e ) )
+
+    if args.starred_gists:
+        try:
+            repos_count += backup_starred_gists( git, local )
+        except Exception as e:
+            error_cond = True
+            notifier.send( '[gitbacker] ERROR', str( e ) )
+
+    if not error_cond:
+        notifier.send(
+            '[gitbacker] Backed up {} repos OK'.format( repos_count ),
+            'Backed up {} repos OK'.format( repos_count ) )
 
 if '__main__' == __name__:
 
@@ -314,6 +368,8 @@ if '__main__' == __name__:
         help='Change the e-mail on commits to downloaded repos (implies -x).' )
     parser.add_argument( '-n', '--name', action='store',
         help='Change the name on commits to downloaded repos (implies -x).' )
+    parser.add_argument( '-d', '--db', action='store_true',
+        help='Store metadata in DB from config.' )
 
     args = parser.parse_args()
 
@@ -331,86 +387,30 @@ if '__main__' == __name__:
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
     db_path = config.get( 'options', 'db_path' )
-    redo = False
+    notifier = Notifier(
+        config.get( 'notify', 'smtp_host' ),
+        config.get( 'notify', 'smtp_to' ),
+        config.get( 'notify', 'smtp_from' ) )
+    git = GitHub( username, api_token, args.topic, args.max_size )
 
-    # TODO: Summarize, notify on failure.
+    if args.db:
+        with sqlite3.connect( db_path ) as db_conn:
 
-    with sqlite3.connect( db_path ) as db_conn:
+            # Setup the database.
+            cur = db_conn.cursor()
+            cur.execute( '''CREATE TABLE IF NOT EXISTS repos (
+                id INTEGER PRIMARY KEY,
+                owner TEXT NOT NULL,
+                name TEXT NOT NULL,
+                repo_id TEXT NOT NULL,
+                topics TEXT NOT NULL )
+            ''' )
+            db_conn.commit()
 
-        cur = db_conn.cursor()
-        cur.execute( '''CREATE TABLE IF NOT EXISTS repos (
-            id INTEGER PRIMARY KEY,
-            owner TEXT NOT NULL,
-            name TEXT NOT NULL,
-            repo_id TEXT NOT NULL,
-            topics TEXT NOT NULL )
-        ''' )
-        db_conn.commit()
-
-        git = GitHub( username, api_token, args.topic, args.max_size )
-        local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
-
-        if args.name or args.email or args.redo:
-            logger.info( 'Redo enabled.' )
-            redo = True
-
-        error_cond = False
-        repos_count = 0
-
-        if args.starred_repos:
-            try:
-                repos_count += backup_starred_repos( git, local, username )
-            except Exception as e:
-                error_cond = True
-                notify_smtp(
-                    config.get( 'notify', 'smtp_host' ),
-                    config.get( 'notify', 'smtp_to' ),
-                    config.get( 'notify', 'smtp_from' ),
-                    '[gitbacker] ERROR',
-                    str( e ) )
-
-        if args.user_repos:
-            try:
-                repos_count += backup_user_repos(
-                    git, local, redo, args.name, args.email )
-            except Exception as e:
-                error_cond = True
-                notify_smtp(
-                    config.get( 'notify', 'smtp_host' ),
-                    config.get( 'notify', 'smtp_to' ),
-                    config.get( 'notify', 'smtp_from' ),
-                    '[gitbacker] ERROR',
-                    str( e ) )
-
-        if args.user_gists:
-            try:
-                repos_count += backup_user_gists( git, local, username )
-            except Exception as e:
-                error_cond = True
-                notify_smtp(
-                    config.get( 'notify', 'smtp_host' ),
-                    config.get( 'notify', 'smtp_to' ),
-                    config.get( 'notify', 'smtp_from' ),
-                    '[gitbacker] ERROR',
-                    str( e ) )
-
-        if args.starred_gists:
-            try:
-                repos_count += backup_starred_gists( git, local )
-            except Exception as e:
-                error_cond = True
-                notify_smtp(
-                    config.get( 'notify', 'smtp_host' ),
-                    config.get( 'notify', 'smtp_to' ),
-                    config.get( 'notify', 'smtp_from' ),
-                    '[gitbacker] ERROR',
-                    str( e ) )
-
-        if not error_cond:
-            notify_smtp(
-                config.get( 'notify', 'smtp_host' ),
-                config.get( 'notify', 'smtp_to' ),
-                config.get( 'notify', 'smtp_from' ),
-                '[gitbacker] Backed up {} repos OK'.format( repos_count ),
-                'Backed up {} repos OK'.format( repos_count ) )
+            local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
+            backup_all( git, local, username, args, notifier )
+    else:
+        # Don't use a DB connection.
+        local = LocalRepo( config.get( 'options', 'repo_dir' ), None )
+        backup_all( git, local, username, args, notifier )
 
