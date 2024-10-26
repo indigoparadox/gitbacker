@@ -18,6 +18,13 @@ except ImportError:
 from git import Repo, Remote
 from git.exc import GitCommandError
 
+class GitBackupFailedException( Exception ):
+    def __init__( self, repo_dir, op ):
+        super( GitBackupFailedException, self ).__init__(
+            'ERROR during {}'.format( op ) )
+        self.repo_dir = repo_dir
+        self.op = op
+
 class GitHubRepo( object ):
 
     def __init__( self, repo_json, topic_filter=None, max_size=None ):
@@ -201,9 +208,11 @@ class LocalRepo( object ):
                 except GitCommandError as e:
                     self.logger.error( 'error cloning; retrying...' )
                     try_count -= 1
-                    shutil.rmtree( repo_dir )
+                    if os.path.exists( repo_dir ):
+                        logger.debug( 'removing failed clone...' )
+                        shutil.rmtree( repo_dir )
                     if 0 >= try_count:
-                        raise Exception( 'clone failed!' )
+                        raise GitBackupFailedException( repo_dir, 'clone' )
 
         self.logger.info( 'checking all remote repo branches...' )
         try_count = 3
@@ -215,7 +224,7 @@ class LocalRepo( object ):
                 self.logger.error( 'error fetching; retrying...' )
                 try_count -= 1
                 if 0 >= try_count:
-                    raise Exception( 'fetch failed!' )
+                    raise GitBackupFailedException( repo_dir, 'fetch' )
 
 class Notifier( object ):
 
@@ -243,7 +252,7 @@ def debug_print( struct ):
     pp = PrettyPrinter()
     pp.pprint( struct )
 
-def backup_user_repos( git, local, redo, uname, uemail ):
+def backup_user_repos( git, local, redo, uname, uemail, notifier ):
 
     ''' Backup all repos for the github user this script is accessing the
     API as, to the directory repo_dir/user_name. '''
@@ -257,7 +266,13 @@ def backup_user_repos( git, local, redo, uname, uemail ):
             # Remove the repo dir so it can be re-created.
             shutil.rmtree( repo_dir )
 
-        res = repo.backup( local )
+        try:
+            res = repo.backup( local )
+        except GitBackupFailedException as e:
+            notifier.send_exc(
+                '[gitbacker] ERROR during user repo {}'.format( e.op ),
+                'repo dir: {}'.format( e.repo_dir ) )
+            continue
 
         # Change author/committer ID information if specified.
         if res and uname and uemail:
@@ -278,26 +293,41 @@ def backup_user_repos( git, local, redo, uname, uemail ):
 
     return count
 
-def backup_starred_repos( git, local, username ):
+def backup_starred_repos( git, local, username, notifier ):
     count = 0
     logger = logging.getLogger( 'repos.starred' )
     for repo in git.get_starred_repos( username ):
-        repo.backup( local )
+        try:
+            repo.backup( local )
+        except GitBackupFailedException as e:
+            notifier.send_exc(
+                '[gitbacker] ERROR during starred repo {}'.format( e.op ),
+                'repo dir: {}'.format( e.repo_dir ) )
     return count
 
-def backup_user_gists( git, local, username ):
+def backup_user_gists( git, local, username, notifier ):
     count = 0
     logger = logging.getLogger( 'gists.user' )
     for gist in git.get_user_gists( username ):
-        gist.backup( local )
+        try:
+            gist.backup( local )
+        except GitBackupFailedException as e:
+            notifier.send_exc(
+                '[gitbacker] ERROR during user gist {}'.format( e.op ),
+                'repo dir: {}'.format( e.repo_dir ) )
         count += 1
     return count
 
-def backup_starred_gists( git, local ):
+def backup_starred_gists( git, local, notifier ):
     count = 0
     logger = logging.getLogger( 'gists.starred' )
     for gist in git.get_own_starred_gists():
-        gist.backup( local )
+        try:
+            gist.backup( local )
+        except GitBackupFailedException as e:
+            notifier.send_exc(
+                '[gitbacker] ERROR during starred gist {}'.format( e.op ),
+                'repo dir: {}'.format( e.repo_dir ) )
     return count
 
 def backup_all( git, local, username, args, notifier ):
@@ -312,7 +342,8 @@ def backup_all( git, local, username, args, notifier ):
 
     if args.starred_repos:
         try:
-            repos_count += backup_starred_repos( git, local, username )
+            repos_count += backup_starred_repos(
+                git, local, username, notifier )
         except Exception as e:
             error_cond = True
             notifier.send_exc( '[gitbacker] ERROR during starred_repos', e )
@@ -321,7 +352,7 @@ def backup_all( git, local, username, args, notifier ):
     if args.user_repos:
         try:
             repos_count += backup_user_repos(
-                git, local, redo, args.name, args.email )
+                git, local, redo, args.name, args.email, notifier )
         except Exception as e:
             error_cond = True
             notifier.send_exc( '[gitbacker] ERROR during user_repos', e )
@@ -329,7 +360,7 @@ def backup_all( git, local, username, args, notifier ):
 
     if args.user_gists:
         try:
-            repos_count += backup_user_gists( git, local, username )
+            repos_count += backup_user_gists( git, local, username, notifier )
         except Exception as e:
             error_cond = True
             notifier.send_exc( '[gitbacker] ERROR during user_gists', e )
@@ -337,7 +368,7 @@ def backup_all( git, local, username, args, notifier ):
 
     if args.starred_gists:
         try:
-            repos_count += backup_starred_gists( git, local )
+            repos_count += backup_starred_gists( git, local, notifier )
         except Exception as e:
             error_cond = True
             notifier.send_exc( '[gitbacker] ERROR during starred_gists', e )
