@@ -86,7 +86,7 @@ class GitHubGist( GitHubRepo ):
 
 class GitHub( object ):
 
-    def __init__( self, username, token, topic_filter, max_size ):
+    def __init__( self, username, token, topic_filter, max_size, skip_repos ):
 
         self.logger = logging.getLogger( 'github' )
         self.username = username
@@ -94,6 +94,7 @@ class GitHub( object ):
             'Accept': 'application/vnd.github.mercy-preview+json' }
         self.topic_filter = topic_filter
         self.max_size = max_size
+        self.skip_repos = skip_repos
 
     def _call_api( self, path, relative=True ):
         
@@ -136,6 +137,11 @@ class GitHub( object ):
     def get_own_user_repos( self ):
         response = self._call_api( 'user/repos' )
         for repo in self._get_paged( response ):
+            repo_full = '{}/{}'.format( repo['owner']['login'], repo['name'] )
+            if repo_full in self.skip_repos:
+                self.logger.info( 'skipping repo %s...', repo_full )
+                continue
+            
             yield GitHubRepo( repo, self.topic_filter, self.max_size )
 
     def get_own_starred_gists( self ):
@@ -469,11 +475,12 @@ if '__main__' == __name__:
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
     db_path = config.get( 'options', 'db_path' )
+    skip = config.get( 'options', 'skip' )
     notifier = Notifier(
         config.get( 'notify', 'smtp_host' ),
         config.get( 'notify', 'smtp_to' ),
         config.get( 'notify', 'smtp_from' ) )
-    git = GitHub( username, api_token, args.topic, args.max_size )
+    git = GitHub( username, api_token, args.topic, args.max_size, skip )
 
     if args.db:
         with sqlite3.connect( db_path ) as db_conn:
