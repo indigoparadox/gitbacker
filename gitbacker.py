@@ -196,9 +196,10 @@ class LocalRepo( object ):
 
         cur = self._db_conn.cursor()
         cur.execute(
-            'INSERT INTO repos(owner, name, repo_id, topics) ' +
-            'VALUES (?, ?, ?, ?)',
-            (repo.owner, repo.name, repo.id, str( repo.topics )) )
+            'INSERT INTO repos(owner, name, repo_id, topics, desc) ' +
+            'VALUES (?, ?, ?, ?, ?)',
+            (repo.owner, repo.name, repo.id,
+                str( repo.topics ), repo.description) )
         self._db_conn.commit()
 
     def create_or_update( self, repo, remote_url, owner=None ):
@@ -492,7 +493,8 @@ if '__main__' == __name__:
                 owner TEXT NOT NULL,
                 name TEXT NOT NULL,
                 repo_id TEXT NOT NULL,
-                topics TEXT NOT NULL )
+                topics TEXT,
+                desc TEXT)
             ''' )
             db_conn.commit()
 
