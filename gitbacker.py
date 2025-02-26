@@ -20,6 +20,8 @@ except ImportError:
 from git import Repo, Remote
 from git.exc import GitCommandError
 
+PATTERN_REMOTE_REF = r'.*find remote ref.*'
+
 class GitBackupFailedException( Exception ):
     def __init__( self, repo_dir, op ):
         super( GitBackupFailedException, self ).__init__(
@@ -187,7 +189,11 @@ class LocalRepo( object ):
                 try:
                     remote.fetch( branch )
                 except Exception as e:
-                    self.logger.error( '{}: {}'.format( repo, e ) )
+                    if PATTERN_REMOTE_REF.search( str( e ) ):
+                        # TODO: Maybe use a different logger?
+                        self.logger.debug( '{}: {}'.format( repo, e ) )
+                    else:
+                        self.logger.error( '{}: {}'.format( repo, e ) )
 
     def update_server_info( self, owner, repo ):
         self.logger.info( 'updating server info...' )
