@@ -189,6 +189,16 @@ class LocalRepo( object ):
                 except Exception as e:
                     self.logger.error( '{}: {}'.format( repo, e ) )
 
+    def update_server_info( self, owner, repo ):
+        self.logger.info( 'updating server info...' )
+        repo_dir = self.get_path( repo.name, owner )
+        cmd = ['git', 'update-server-info']
+        proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
+        git_std = proc.communicate()
+        for line in git_std:
+            if line:
+                logger.info( '{}: {}'.format( repo.name, line.strip() ) )
+
     def update_metadata( self, repo ):
 
         if not self._db_conn:
@@ -213,6 +223,7 @@ class LocalRepo( object ):
                     # So our stored credentials work.
                     remote_url = remote_url.replace( 'git://', 'https://' )
                     Repo.clone_from( remote_url, repo_dir, bare=True )
+                    self.update_server_info( owner, repo )
                     try_count = 0
                 except GitCommandError as e:
                     self.logger.error( 'error cloning; retrying...' )
@@ -228,6 +239,7 @@ class LocalRepo( object ):
         while 0 < try_count:
             try:
                 self.fetch_all_branches( owner, repo )
+                self.update_server_info( owner, repo )
                 try_count = 0
             except GitCommandError as e:
                 self.logger.error( 'error fetching; retrying...' )
