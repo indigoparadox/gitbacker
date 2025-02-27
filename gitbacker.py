@@ -20,7 +20,7 @@ except ImportError:
 from git import Repo, Remote
 from git.exc import GitCommandError
 
-PATTERN_REMOTE_REF = r'.*find remote ref.*'
+PATTERN_REMOTE_REF = re.compile( r'.*find remote ref.*' )
 
 class GitBackupFailedException( Exception ):
     def __init__( self, repo_dir, op ):
@@ -197,7 +197,7 @@ class LocalRepo( object ):
 
     def update_server_info( self, owner, repo ):
         self.logger.info( 'updating server info...' )
-        repo_dir = self.get_path( repo.name, owner )
+        repo_dir = self.get_path( repo, owner )
         cmd = ['git', 'update-server-info']
         proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
         git_std = proc.communicate()
