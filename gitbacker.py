@@ -23,11 +23,12 @@ from git.exc import GitCommandError
 PATTERN_REMOTE_REF = re.compile( r'.*find remote ref.*' )
 
 class GitBackupFailedException( Exception ):
-    def __init__( self, repo_dir, op ):
+    def __init__( self, repo_dir, op, branch=None ):
         super( GitBackupFailedException, self ).__init__(
             'ERROR during {}'.format( op ) )
         self.repo_dir = repo_dir
         self.op = op
+        self.branch = branch
 
 class GitHubRepo( object ):
 
@@ -184,16 +185,25 @@ class LocalRepo( object ):
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in r.remotes:
             for branch in branches:
-                self.logger.info( 'checking {}/{} branch: {}'.format(
-                    owner, repo, branch ) )
-                try:
-                    remote.fetch( branch )
-                except Exception as e:
-                    if PATTERN_REMOTE_REF.search( str( e ) ):
-                        # TODO: Maybe use a different logger?
-                        self.logger.debug( '{}: {}'.format( repo, e ) )
-                    else:
-                        self.logger.error( '{}: {}'.format( repo, e ) )
+                try_count = 3
+                while 0 < try_count:
+                    self.logger.info( 'checking {}/{} branch: {}'.format(
+                        owner, repo, branch ) )
+                    try:
+                        remote.fetch( branch )
+                        # If successful, don't loop.
+                        try_count = 0
+                    except Exception as e:
+                        if PATTERN_REMOTE_REF.search( str( e ) ):
+                            # TODO: Maybe use a different logger?
+                            self.logger.debug( '{}: {}'.format( repo, e ) )
+                            # If this is a dead branch, just move on.
+                            try_count = 0
+                        else:
+                            try_count -= 1
+                            if 0 >= try_count:
+                                raise GitBackupFailedException(
+                                    repo_dir, 'fetch', branch )
 
     def update_server_info( self, owner, repo ):
         self.logger.info( 'updating server info...' )
@@ -241,17 +251,8 @@ class LocalRepo( object ):
                         raise GitBackupFailedException( repo_dir, 'clone' )
 
         self.logger.info( 'checking all remote repo branches...' )
-        try_count = 3
-        while 0 < try_count:
-            try:
-                self.fetch_all_branches( owner, repo )
-                self.update_server_info( owner, repo )
-                try_count = 0
-            except GitCommandError as e:
-                self.logger.error( 'error fetching; retrying...' )
-                try_count -= 1
-                if 0 >= try_count:
-                    raise GitBackupFailedException( repo_dir, 'fetch' )
+        self.fetch_all_branches( owner, repo )
+        self.update_server_info( owner, repo )
 
 class Notifier( object ):
 
@@ -311,7 +312,7 @@ def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user repo {}'.format( e.op ),
-                'repo dir: {}'.format( e.repo_dir ) )
+                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
             continue
 
         # Change author/committer ID information if specified.
@@ -346,7 +347,7 @@ def backup_starred_repos( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred repo {}'.format( e.op ),
-                'repo dir: {}'.format( e.repo_dir ) )
+                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
@@ -361,7 +362,7 @@ def backup_user_gists( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user gist {}'.format( e.op ),
-                'repo dir: {}'.format( e.repo_dir ) )
+                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
@@ -376,7 +377,7 @@ def backup_starred_gists( git, local, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred gist {}'.format( e.op ),
-                'repo dir: {}'.format( e.repo_dir ) )
+                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
