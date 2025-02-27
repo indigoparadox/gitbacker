@@ -177,12 +177,12 @@ class LocalRepo( object ):
         else:
             return os.path.join( self._root, '{}.git'.format( repo_name ) )
 
-    def fetch_branch( self, owner_name, repo, branch ):
+    def fetch_branch( self, owner_name, repo_name, remote, branch ):
 
         try_count = 3
         while 0 < try_count:
             self.logger.info( 'checking {}/{} branch: {}'.format(
-                owner_name, repo.name, branch ) )
+                owner_name, repo_name, branch ) )
             try:
                 remote.fetch( branch )
                 # If successful, don't loop.
@@ -190,7 +190,7 @@ class LocalRepo( object ):
             except Exception as e:
                 if PATTERN_REMOTE_REF.search( str( e ) ):
                     # TODO: Maybe use a different logger?
-                    self.logger.debug( '{}: {}'.format( repo.name, e ) )
+                    self.logger.debug( '{}: {}'.format( repo_name, e ) )
                     # If this is a dead branch, just move on.
                     try_count = 0
                 else:
@@ -210,7 +210,7 @@ class LocalRepo( object ):
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in repo.remotes:
             for branch in branches:
-                self.fetch_branch( owner_name, repo, branch )
+                self.fetch_branch( owner_name, repo_name, remote, branch )
 
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
