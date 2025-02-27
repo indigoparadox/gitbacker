@@ -203,7 +203,7 @@ class LocalRepo( object ):
         git_std = proc.communicate()
         for line in git_std:
             if line:
-                logger.info( '{}: {}'.format( repo.name, line.strip() ) )
+                logger.info( '{}: {}'.format( repo, line.strip() ) )
 
     def update_metadata( self, repo ):
 
