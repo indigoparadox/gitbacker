@@ -188,7 +188,7 @@ class LocalRepo( object ):
                     if 0 >= try_count:
                         # Just give up for now.
                         raise GitBackupFailedException(
-                            str( e ), 'fetch', **kwargs )
+                            str( e ), str( func ), **kwargs )
 
     def get_root( self ):
         return self._root
