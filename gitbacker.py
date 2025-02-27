@@ -213,6 +213,8 @@ class LocalRepo( object ):
         except UnicodeDecodeError as e:
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in repo.remotes:
+            # Try to fetch all new branches, but no refspec?
+            #self._try_repeat( 3, remote.fetch )
             for branch in branches:
                 self._try_repeat(
                     3, self.fetch_branch,
@@ -222,12 +224,8 @@ class LocalRepo( object ):
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
         repo_dir = self.get_path( repo_name, owner_name )
-        cmd = ['git', 'update-server-info']
-        proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
-        git_std = proc.communicate()
-        for line in git_std:
-            if line:
-                logger.info( '{}: {}'.format( repo_name, line.strip() ) )
+        repo = Repo( repo_dir )
+        repo.git.update_server_info()
 
     def update_metadata( self, repo ):
 
