@@ -210,7 +210,25 @@ class LocalRepo( object ):
         repo_dir = self.get_path( repo_name, owner_name )
         repo = Repo( repo_dir )
         for remote in repo.remotes:
-            remote.fetch( '*:*' )
+            try:
+                self.logger.info( 'attempting group branch fetch...' )
+                remote.fetch( '*:*' )
+            except:
+                self.logger.info( 'group branch fetch failed, looping...' )
+                branches = []
+                try:
+                    branches = [b.name for b in repo.branches]
+                except UnicodeDecodeError as e:
+                    self.logger.error(
+                        'could not decode branch name: {}'.format( e ) )
+                for remote in repo.remotes:
+                    # Try to fetch all new branches, but no refspec?
+                    #self._try_repeat( 3, remote.fetch )
+                    for branch in branches:
+                        self._try_repeat(
+                            3, self.fetch_branch,
+                            owner_name=owner_name, repo_name=repo_name,
+                            remote=remote, branch=branch )
 
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
