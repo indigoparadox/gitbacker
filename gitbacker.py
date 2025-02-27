@@ -210,7 +210,7 @@ class LocalRepo( object ):
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in repo.remotes:
             for branch in branches:
-                self.fetch_branch( owner_name, repo )
+                self.fetch_branch( owner_name, repo, branch )
 
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
