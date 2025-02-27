@@ -23,13 +23,14 @@ from git.exc import GitCommandError
 PATTERN_REMOTE_REF = re.compile( r'.*find remote ref.*' )
 
 class GitBackupFailedException( Exception ):
-    def __init__( self, msg, repo_dir, op, branch=None ):
+    def __init__( self, msg, op, **kwargs ):
         super( GitBackupFailedException, self ).__init__(
             'ERROR during {}'.format( op ) )
-        self.repo_dir = repo_dir
         self.op = op
-        self.branch = branch
         self.msg = msg
+        self.func_args = {}
+        for arg in kwargs:
+            self.func_args[arg] = kwargs[arg]
 
 class GitHubRepo( object ):
 
@@ -167,6 +168,26 @@ class LocalRepo( object ):
         self._db_conn = db_conn
         self.logger = logging.getLogger( 'localrepo' )
 
+    def _try_repeat( self, try_count, func, **kwargs ):
+        while 0 < try_count:
+            try:
+                func( **kwargs )
+                # If successful, don't loop.
+                try_count = 0
+            except Exception as e:
+                if PATTERN_REMOTE_REF.search( str( e ) ):
+                    # TODO: Maybe use a different logger?
+                    self.logger.debug( '{}: {}'.format( repo_name, e ) )
+                    # If this is a dead branch, just move on.
+                    try_count = 0
+                else:
+                    self.logger.error( 'error during %s; retrying...', func )
+                    try_count -= 1
+                    if 0 >= try_count:
+                        # Just give up for now.
+                        raise GitBackupFailedException(
+                            str( e ), 'fetch', **kwargs )
+
     def get_root( self ):
         return self._root
 
@@ -178,28 +199,10 @@ class LocalRepo( object ):
             return os.path.join( self._root, '{}.git'.format( repo_name ) )
 
     def fetch_branch( self, owner_name, repo_name, remote, branch ):
+        self.logger.info( 'checking {}/{} branch: {}'.format(
+            owner_name, repo_name, branch ) )
         repo_dir = self.get_path( repo_name, owner_name )
-        try_count = 3
-        while 0 < try_count:
-            self.logger.info( 'checking {}/{} branch: {}'.format(
-                owner_name, repo_name, branch ) )
-            try:
-                remote.fetch( branch )
-                # If successful, don't loop.
-                try_count = 0
-            except Exception as e:
-                if PATTERN_REMOTE_REF.search( str( e ) ):
-                    # TODO: Maybe use a different logger?
-                    self.logger.debug( '{}: {}'.format( repo_name, e ) )
-                    # If this is a dead branch, just move on.
-                    try_count = 0
-                else:
-                    self.logger.error( 'error fetching; retrying...' )
-                    try_count -= 1
-                    if 0 >= try_count:
-                        # Just give up for now.
-                        raise GitBackupFailedException(
-                            str( e ), repo_dir, 'fetch', branch )
+        remote.fetch( branch )
 
     def fetch_all_branches( self, owner_name, repo_name ):
         repo_dir = self.get_path( repo_name, owner_name )
@@ -211,7 +214,10 @@ class LocalRepo( object ):
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in repo.remotes:
             for branch in branches:
-                self.fetch_branch( owner_name, repo_name, remote, branch )
+                self._try_repeat(
+                    3, self.fetch_branch,
+                    owner_name=owner_name, repo_name=repo_name,
+                    remote=remote, branch=branch )
 
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
@@ -236,28 +242,27 @@ class LocalRepo( object ):
                 str( repo.topics ), repo.description) )
         self._db_conn.commit()
 
-    def create_or_update( self, repo_name, remote_url, owner_name=None ):
+    def clone_create( self, owner_name, repo_name, remote_url ):
         repo_dir = self.get_path( repo_name, owner_name )
-        try_count = 3
+        self.logger.info( 'creating local repo copy...' )
+        # So our stored credentials work.
+        remote_url = remote_url.replace( 'git://', 'https://' )
+        Repo.clone_from( remote_url, repo_dir, bare=True )
+        self.update_server_info( owner_name, repo_name )
 
+    def create_or_update( self, repo_name, remote_url, owner_name=None ):
+
+        repo_dir = self.get_path( repo_name, owner_name )
         if not os.path.exists( repo_dir ):
-            while 0 < try_count:
-                try:
-                    self.logger.info( 'creating local repo copy...' )
-                    # So our stored credentials work.
-                    remote_url = remote_url.replace( 'git://', 'https://' )
-                    Repo.clone_from( remote_url, repo_dir, bare=True )
-                    self.update_server_info( owner_name, repo_name )
-                    try_count = 0
-                except GitCommandError as e:
-                    self.logger.error( 'error cloning; retrying...' )
-                    try_count -= 1
-                    if os.path.exists( repo_dir ):
-                        logger.debug( 'removing failed clone...' )
-                        shutil.rmtree( repo_dir )
-                    if 0 >= try_count:
-                        raise GitBackupFailedException(
-                            str( e ), repo_dir, 'clone' )
+            try:
+                self._try_repeat( 3, self.clone_create,
+                    repo_name=repo_name, owner_name=owner_name,
+                    remote_url=remote_url )
+            except Exception as e:
+                if os.path.exists( repo_dir ):
+                    self.logger.info( 'removing failed clone %s...', repo_dir )
+                    shutil.rmtree( repo_dir )
+                raise( e )
 
         self.logger.info( 'checking all remote repo branches...' )
         self.fetch_all_branches( owner_name, repo_name )
@@ -281,7 +286,7 @@ class Notifier( object ):
 
     def send_exc( self, subject, e ):
 
-        self.send( subject, traceback.format_exc() )
+        self.send( subject, e + '\n\n\n' + traceback.format_exc() )
 
 class SigWatcher( object ):
     def __init__( self, notifier, force=False ):
@@ -321,8 +326,8 @@ def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user repo {}'.format( e.op ),
-                'msg: {}, repo dir: {}, branch: {}'.format(
-                    e.msg, e.repo_dir, e.branch ) )
+                'msg: {}, args: {}'.format(
+                    e.msg, str( e.func_args ) ) )
             continue
 
         # Change author/committer ID information if specified.
@@ -357,8 +362,7 @@ def backup_starred_repos( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred repo {}'.format( e.op ),
-                'msg: {}, repo dir: {}, branch: {}'.format(
-                    e.msg, e.repo_dir, e.branch ) )
+                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
         if not watcher.running:
             return count
     return count
@@ -373,8 +377,7 @@ def backup_user_gists( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user gist {}'.format( e.op ),
-                'msg: {}, repo dir: {}, branch: {}'.format(
-                    e.msg, e.repo_dir, e.branch ) )
+                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
         if not watcher.running:
             return count
     return count
@@ -389,8 +392,7 @@ def backup_starred_gists( git, local, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred gist {}'.format( e.op ),
-                'msg: {}, repo dir: {}, branch: {}'.format(
-                    e.msg, e.repo_dir, e.branch ) )
+                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
         if not watcher.running:
             return count
     return count
@@ -414,7 +416,8 @@ def backup_all( git, local, username, args, notifier ):
                 git, local, username, notifier, watcher )
         except Exception as e:
             error_cond = True
-            notifier.send_exc( '[gitbacker] ERROR during starred_repos', e )
+            notifier.send_exc(
+                '[gitbacker] ERROR during starred_repos', str( e ) )
             logger.exception( e )
 
         if not watcher.running:
@@ -426,7 +429,8 @@ def backup_all( git, local, username, args, notifier ):
                 git, local, redo, args.name, args.email, notifier, watcher )
         except Exception as e:
             error_cond = True
-            notifier.send_exc( '[gitbacker] ERROR during user_repos', e )
+            notifier.send_exc(
+                '[gitbacker] ERROR during user_repos', str( e ) )
             logger.exception( e )
 
         if not watcher.running:
@@ -438,7 +442,8 @@ def backup_all( git, local, username, args, notifier ):
                 git, local, username, notifier, watcher )
         except Exception as e:
             error_cond = True
-            notifier.send_exc( '[gitbacker] ERROR during user_gists', e )
+            notifier.send_exc(
+                '[gitbacker] ERROR during user_gists', str( e ) )
             logger.exception( e )
 
         if not watcher.running:
@@ -449,7 +454,8 @@ def backup_all( git, local, username, args, notifier ):
             repos_count += backup_starred_gists( git, local, notifier, watcher )
         except Exception as e:
             error_cond = True
-            notifier.send_exc( '[gitbacker] ERROR during starred_gists', e )
+            notifier.send_exc(
+                '[gitbacker] ERROR during starred_gists', str( e ) )
             logger.exception( e )
 
         if not watcher.running:
