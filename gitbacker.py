@@ -178,7 +178,7 @@ class LocalRepo( object ):
             return os.path.join( self._root, '{}.git'.format( repo_name ) )
 
     def fetch_branch( self, owner_name, repo_name, remote, branch ):
-
+        repo_dir = self.get_path( repo_name, owner_name )
         try_count = 3
         while 0 < try_count:
             self.logger.info( 'checking {}/{} branch: {}'.format(
