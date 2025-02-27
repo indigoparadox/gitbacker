@@ -209,19 +209,8 @@ class LocalRepo( object ):
     def fetch_all_branches( self, owner_name, repo_name ):
         repo_dir = self.get_path( repo_name, owner_name )
         repo = Repo( repo_dir )
-        branches = []
-        try:
-            branches = [b.name for b in repo.branches]
-        except UnicodeDecodeError as e:
-            self.logger.error( 'could not decode branch name: {}'.format( e ) )
         for remote in repo.remotes:
-            # Try to fetch all new branches, but no refspec?
-            #self._try_repeat( 3, remote.fetch )
-            for branch in branches:
-                self._try_repeat(
-                    3, self.fetch_branch,
-                    owner_name=owner_name, repo_name=repo_name,
-                    remote=remote, branch=branch )
+            remote.fetch( '*:*' )
 
     def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
@@ -265,7 +254,9 @@ class LocalRepo( object ):
                 raise( e )
 
         self.logger.info( 'checking all remote repo branches...' )
-        self.fetch_all_branches( owner_name, repo_name )
+        self._try_repeat(
+            3, self.fetch_all_branches,
+            owner_name=owner_name, repo_name=repo_name )
         self.update_server_info( owner_name, repo_name )
 
 class Notifier( object ):
