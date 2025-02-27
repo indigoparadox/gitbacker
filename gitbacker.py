@@ -177,8 +177,10 @@ class LocalRepo( object ):
             except Exception as e:
                 if PATTERN_REMOTE_REF.search( str( e ) ):
                     # TODO: Maybe use a different logger?
-                    self.logger.debug( '{}: {}'.format( repo_name, e ) )
+                    self.logger.debug( '{}: {}'.format(
+                        kwargs['repo_name'], e ) )
                     # If this is a dead branch, just move on.
+                    self.logger.info( 'skipping deleted branch...' )
                     try_count = 0
                 else:
                     self.logger.error( 'error during %s; retrying...', func )
