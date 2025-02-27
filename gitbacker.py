@@ -194,6 +194,7 @@ class LocalRepo( object ):
                     # If this is a dead branch, just move on.
                     try_count = 0
                 else:
+                    self.logger.error( 'error fetching; retrying...' )
                     try_count -= 1
                     if 0 >= try_count:
                         # Just give up for now.
