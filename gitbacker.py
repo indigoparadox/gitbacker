@@ -23,12 +23,13 @@ from git.exc import GitCommandError
 PATTERN_REMOTE_REF = re.compile( r'.*find remote ref.*' )
 
 class GitBackupFailedException( Exception ):
-    def __init__( self, repo_dir, op, branch=None ):
+    def __init__( self, msg, repo_dir, op, branch=None ):
         super( GitBackupFailedException, self ).__init__(
             'ERROR during {}'.format( op ) )
         self.repo_dir = repo_dir
         self.op = op
         self.branch = branch
+        self.msg = msg
 
 class GitHubRepo( object ):
 
@@ -169,51 +170,57 @@ class LocalRepo( object ):
     def get_root( self ):
         return self._root
 
-    def get_path( self, repo, owner=None ):
-        if owner:
-            return os.path.join( self._root, owner, '{}.git'.format( repo ) )
+    def get_path( self, repo_name, owner_name=None ):
+        if owner_name:
+            return os.path.join(
+                self._root, owner_name, '{}.git'.format( repo_name ) )
         else:
-            return os.path.join( self._root, '{}.git'.format( repo ) )
+            return os.path.join( self._root, '{}.git'.format( repo_name ) )
 
-    def fetch_all_branches( self, owner, repo ):
-        repo_dir = self.get_path( repo, owner )
-        r = Repo( repo_dir )
+    def fetch_branch( self, owner_name, repo, branch ):
+
+        try_count = 3
+        while 0 < try_count:
+            self.logger.info( 'checking {}/{} branch: {}'.format(
+                owner_name, repo.name, branch ) )
+            try:
+                remote.fetch( branch )
+                # If successful, don't loop.
+                try_count = 0
+            except Exception as e:
+                if PATTERN_REMOTE_REF.search( str( e ) ):
+                    # TODO: Maybe use a different logger?
+                    self.logger.debug( '{}: {}'.format( repo.name, e ) )
+                    # If this is a dead branch, just move on.
+                    try_count = 0
+                else:
+                    try_count -= 1
+                    if 0 >= try_count:
+                        # Just give up for now.
+                        raise GitBackupFailedException(
+                            str( e ), repo_dir, 'fetch', branch )
+
+    def fetch_all_branches( self, owner_name, repo_name ):
+        repo_dir = self.get_path( repo_name, owner_name )
+        repo = Repo( repo_dir )
         branches = []
         try:
-            branches = [b.name for b in r.branches]
+            branches = [b.name for b in repo.branches]
         except UnicodeDecodeError as e:
             self.logger.error( 'could not decode branch name: {}'.format( e ) )
-        for remote in r.remotes:
+        for remote in repo.remotes:
             for branch in branches:
-                try_count = 3
-                while 0 < try_count:
-                    self.logger.info( 'checking {}/{} branch: {}'.format(
-                        owner, repo, branch ) )
-                    try:
-                        remote.fetch( branch )
-                        # If successful, don't loop.
-                        try_count = 0
-                    except Exception as e:
-                        if PATTERN_REMOTE_REF.search( str( e ) ):
-                            # TODO: Maybe use a different logger?
-                            self.logger.debug( '{}: {}'.format( repo, e ) )
-                            # If this is a dead branch, just move on.
-                            try_count = 0
-                        else:
-                            try_count -= 1
-                            if 0 >= try_count:
-                                raise GitBackupFailedException(
-                                    repo_dir, 'fetch', branch )
+                self.fetch_branch( owner_name, repo )
 
-    def update_server_info( self, owner, repo ):
+    def update_server_info( self, owner_name, repo_name ):
         self.logger.info( 'updating server info...' )
-        repo_dir = self.get_path( repo, owner )
+        repo_dir = self.get_path( repo_name, owner_name )
         cmd = ['git', 'update-server-info']
         proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
         git_std = proc.communicate()
         for line in git_std:
             if line:
-                logger.info( '{}: {}'.format( repo, line.strip() ) )
+                logger.info( '{}: {}'.format( repo_name, line.strip() ) )
 
     def update_metadata( self, repo ):
 
@@ -228,8 +235,8 @@ class LocalRepo( object ):
                 str( repo.topics ), repo.description) )
         self._db_conn.commit()
 
-    def create_or_update( self, repo, remote_url, owner=None ):
-        repo_dir = self.get_path( repo, owner )
+    def create_or_update( self, repo_name, remote_url, owner_name=None ):
+        repo_dir = self.get_path( repo_name, owner_name )
         try_count = 3
 
         if not os.path.exists( repo_dir ):
@@ -239,7 +246,7 @@ class LocalRepo( object ):
                     # So our stored credentials work.
                     remote_url = remote_url.replace( 'git://', 'https://' )
                     Repo.clone_from( remote_url, repo_dir, bare=True )
-                    self.update_server_info( owner, repo )
+                    self.update_server_info( owner_name, repo_name )
                     try_count = 0
                 except GitCommandError as e:
                     self.logger.error( 'error cloning; retrying...' )
@@ -248,11 +255,12 @@ class LocalRepo( object ):
                         logger.debug( 'removing failed clone...' )
                         shutil.rmtree( repo_dir )
                     if 0 >= try_count:
-                        raise GitBackupFailedException( repo_dir, 'clone' )
+                        raise GitBackupFailedException(
+                            str( e ), repo_dir, 'clone' )
 
         self.logger.info( 'checking all remote repo branches...' )
-        self.fetch_all_branches( owner, repo )
-        self.update_server_info( owner, repo )
+        self.fetch_all_branches( owner_name, repo_name )
+        self.update_server_info( owner_name, repo_name )
 
 class Notifier( object ):
 
@@ -312,7 +320,8 @@ def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user repo {}'.format( e.op ),
-                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
+                'msg: {}, repo dir: {}, branch: {}'.format(
+                    e.msg, e.repo_dir, e.branch ) )
             continue
 
         # Change author/committer ID information if specified.
@@ -347,7 +356,8 @@ def backup_starred_repos( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred repo {}'.format( e.op ),
-                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
+                'msg: {}, repo dir: {}, branch: {}'.format(
+                    e.msg, e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
@@ -362,7 +372,8 @@ def backup_user_gists( git, local, username, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during user gist {}'.format( e.op ),
-                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
+                'msg: {}, repo dir: {}, branch: {}'.format(
+                    e.msg, e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
@@ -377,7 +388,8 @@ def backup_starred_gists( git, local, notifier, watcher ):
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during starred gist {}'.format( e.op ),
-                'repo dir: {}, branch: {}'.format( e.repo_dir, e.branch ) )
+                'msg: {}, repo dir: {}, branch: {}'.format(
+                    e.msg, e.repo_dir, e.branch ) )
         if not watcher.running:
             return count
     return count
