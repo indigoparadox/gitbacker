@@ -207,13 +207,13 @@ class LocalRepo( object ):
     def each_repo( self ):
         for user in os.listdir( self._root ):
             user_dir = os.path.join( self._root, user )
-            if os.path.isdir( user_dir ):
+            if not os.path.isdir( user_dir ):
                 self.logger.warning( 'invalid user dir: %s', user_dir )
                 continue
 
             for repo in os.listdir( user_dir ):
                 repo_dir = os.path.join( self._root, user, repo )
-                if os.path.isdir( user_dir ):
+                if not os.path.isdir( user_dir ):
                     self.logger.warning( 'invalid repo dir: %s', repo_dir )
                     continue
                 if not repo_dir.endswith( '.git' ):
