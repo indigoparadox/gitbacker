@@ -196,9 +196,22 @@ class LocalRepo( object ):
     def get_path( self, repo_name, owner_name=None ):
         if owner_name:
             return os.path.join(
-                self._root, owner_name, '{}.git'.format( repo_name ) )
+                self._root, owner_name,
+                    '{}.git'.format( repo_name ) if not \
+                        repo_name.endswith( '.git' ) else repo_name )
         else:
-            return os.path.join( self._root, '{}.git'.format( repo_name ) )
+            return os.path.join( self._root,
+                '{}.git'.format( repo_name ) if not \
+                    repo_name.endswith( '.git' ) else repo_name )
+
+    def each_repo( self ):
+        for user in os.listdir( self._root ):
+            for repo in os.listdir( os.path.join( self._root, user ) ):
+                repo_dir = os.path.join( self._root, user, repo )
+                if not repo_dir.endswith( '.git' ):
+                    logger.warning( 'dir %s not a repo?', repo_dir )
+                    continue
+                yield repo_dir, user, repo
 
     def fetch_branch( self, owner_name, repo_name, remote, branch ):
         self.logger.info( 'checking {}/{} branch: {}'.format(
@@ -231,10 +244,14 @@ class LocalRepo( object ):
                             remote=remote, branch=branch )
 
     def update_server_info( self, owner_name, repo_name ):
-        self.logger.info( 'updating server info...' )
+        self.logger.info( 'updating server info for %s/%s...',
+            owner_name, repo_name )
         repo_dir = self.get_path( repo_name, owner_name )
         repo = Repo( repo_dir )
         repo.git.update_server_info()
+
+        with repo.config_writer( 'repository' ) as cfg:
+            cfg.set_value( 'gitweb', 'owner', owner_name )
 
     def update_metadata( self, repo ):
 
@@ -322,7 +339,7 @@ def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
     API as, to the directory repo_dir/user_name. '''
 
     count = 0
-    logger = logging.getLogger( 'repos.user' )
+    logger = logging.getLogger( 'backup.repos.user' )
     for repo in git.get_own_user_repos():
 
         repo_dir = local.get_path( repo.name )
@@ -363,7 +380,7 @@ def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
 
 def backup_starred_repos( git, local, username, notifier, watcher ):
     count = 0
-    logger = logging.getLogger( 'repos.starred' )
+    logger = logging.getLogger( 'backup.repos.starred' )
     for repo in git.get_starred_repos( username ):
         try:
             repo.backup( local )
@@ -378,7 +395,7 @@ def backup_starred_repos( git, local, username, notifier, watcher ):
 
 def backup_user_gists( git, local, username, notifier, watcher ):
     count = 0
-    logger = logging.getLogger( 'gists.user' )
+    logger = logging.getLogger( 'backup.gists.user' )
     for gist in git.get_user_gists( username ):
         try:
             gist.backup( local )
@@ -393,7 +410,7 @@ def backup_user_gists( git, local, username, notifier, watcher ):
 
 def backup_starred_gists( git, local, notifier, watcher ):
     count = 0
-    logger = logging.getLogger( 'gists.starred' )
+    logger = logging.getLogger( 'backup.gists.starred' )
     for gist in git.get_own_starred_gists():
         try:
             gist.backup( local )
@@ -407,6 +424,8 @@ def backup_starred_gists( git, local, notifier, watcher ):
     return count
 
 def backup_all( git, local, username, notifier, **kwargs ):
+
+    logger = logging.getLogger( 'backup' )
 
     error_cond = False
     repos_count = 0
@@ -476,10 +495,15 @@ def backup_all( git, local, username, notifier, **kwargs ):
             '[gitbacker] Backed up {} repos OK'.format( repos_count ),
             'Backed up {} repos OK'.format( repos_count ) )
 
-def do_backup( git, notifier, config, **kwargs ):
+def do_backup( config, notifier, **kwargs ):
+
+    # TODO: Consolidate with backup_all().
 
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
+    skip = config.get( 'options', 'skip' )
+    db_path = config.get( 'options', 'db_path' )
+    git = GitHub( username, api_token, args.topic, args.max_size, skip )
 
     if kwargs['db']:
         with sqlite3.connect( db_path ) as db_conn:
@@ -502,6 +526,13 @@ def do_backup( git, notifier, config, **kwargs ):
         # Don't use a DB connection.
         local = LocalRepo( config.get( 'options', 'repo_dir' ), None )
         backup_all( git, local, username, notifier, **kwargs )
+
+def do_metaref( config, notifier, **kwargs ):
+
+    local = LocalRepo( config.get( 'options', 'repo_dir' ), None )
+    
+    for repo_dir, user, repo in local.each_repo():
+        local.update_server_info( user, repo )
 
 def main():
 
@@ -542,6 +573,10 @@ def main():
 
     parser_backup.set_defaults( func=do_backup )
 
+    parser_metaref = subparsers.add_parser( 'metaref' )
+
+    parser_metaref.set_defaults( func=do_metaref )
+
     args = parser.parse_args()
 
     if args.quiet:
@@ -559,18 +594,13 @@ def main():
     # Load auth config.
     config = ConfigParser()
     config.read( args.config_file )
-    username = config.get( 'auth', 'username' )
-    api_token = config.get( 'auth', 'token' )
-    db_path = config.get( 'options', 'db_path' )
-    skip = config.get( 'options', 'skip' )
     notifier = Notifier(
         config.get( 'notify', 'smtp_host' ),
         config.get( 'notify', 'smtp_to' ),
         config.get( 'notify', 'smtp_from' ) )
-    git = GitHub( username, api_token, args.topic, args.max_size, skip )
 
     args_arr = vars( args )
-    args.func( git, notifier, config, **args_arr )
+    args.func( config, notifier, **args_arr )
 
 if '__main__' == __name__:
     main()
