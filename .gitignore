@@ -3,3 +3,4 @@ gitbacker.ini
 *.swp
 *.pyc
 venv
+.venv
