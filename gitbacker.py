@@ -406,7 +406,7 @@ def backup_starred_gists( git, local, notifier, watcher ):
             return count
     return count
 
-def backup_all( git, local, username, args, notifier ):
+def backup_all( git, local, username, notifier, **kwargs ):
 
     error_cond = False
     repos_count = 0
@@ -415,11 +415,11 @@ def backup_all( git, local, username, args, notifier ):
     signal.signal( signal.SIGINT, watcher.handle )
     signal.signal( signal.SIGTERM, watcher.handle )
 
-    if args.name or args.email or args.redo:
+    if kwargs['name'] or kwargs['email'] or kwargs['redo']:
         logger.info( 'Redo enabled.' )
         redo = True
 
-    if args.starred_repos:
+    if kwargs['starred_repos']:
         try:
             repos_count += backup_starred_repos(
                 git, local, username, notifier, watcher )
@@ -432,10 +432,11 @@ def backup_all( git, local, username, args, notifier ):
         if not watcher.running:
             return
 
-    if args.user_repos:
+    if kwargs['user_repos']:
         try:
             repos_count += backup_user_repos(
-                git, local, redo, args.name, args.email, notifier, watcher )
+                git, local, redo, kwargs['name'],
+                kwargs['email'], notifier, watcher )
         except Exception as e:
             error_cond = True
             notifier.send_exc(
@@ -445,7 +446,7 @@ def backup_all( git, local, username, args, notifier ):
         if not watcher.running:
             return
 
-    if args.user_gists:
+    if kwargs['user_gists']:
         try:
             repos_count += backup_user_gists(
                 git, local, username, notifier, watcher )
@@ -458,7 +459,7 @@ def backup_all( git, local, username, args, notifier ):
         if not watcher.running:
             return
 
-    if args.starred_gists:
+    if kwargs['starred_gists']:
         try:
             repos_count += backup_starred_gists( git, local, notifier, watcher )
         except Exception as e:
@@ -475,62 +476,12 @@ def backup_all( git, local, username, args, notifier ):
             '[gitbacker] Backed up {} repos OK'.format( repos_count ),
             'Backed up {} repos OK'.format( repos_count ) )
 
-if '__main__' == __name__:
+def do_backup( git, notifier, config, **kwargs ):
 
-    # Parse CLI args.
-    parser = ArgumentParser()
-
-    parser.add_argument( '-c', '--config', default='gitbacker.ini',
-        help='Path to the config file to load.' )
-    parser.add_argument( '-q', '--quiet', action='store_true',
-        help='Quiet mode.' )
-    parser.add_argument( '-v', '--verbose', action='store_true',
-        help='Verbose mode.' )
-    parser.add_argument( '-s', '--starred-repos', action='store_true',
-        help='Backup starred repositories.' )
-    parser.add_argument( '-r', '--user-repos', action='store_true',
-        help='Backup user repositories.' )
-    parser.add_argument( '-m', '--max-size', type=int,
-        help='Maximum repo size. Ignore repos larger than in MB.' )
-    parser.add_argument( '-g', '--user-gists', action='store_true',
-        help='Backup user gists.' )
-    parser.add_argument( '-f', '--starred-gists', action='store_true',
-        help='Backup authenticated user\'s starred gists.' )
-    parser.add_argument( '-t', '--topic', action='store',
-        help='Only backup repositories with the given topic attached.' )
-    parser.add_argument( '-x', '--redo', action='store_true',
-        help='Remove existing repos and re-clone.' )
-    parser.add_argument( '-e', '--email', action='store',
-        help='Change the e-mail on commits to downloaded repos (implies -x).' )
-    parser.add_argument( '-n', '--name', action='store',
-        help='Change the name on commits to downloaded repos (implies -x).' )
-    parser.add_argument( '-d', '--db', action='store_true',
-        help='Store metadata in DB from config.' )
-
-    args = parser.parse_args()
-
-    if args.quiet:
-        logging.basicConfig( level=logging.WARNING )
-    elif args.verbose:
-        logging.basicConfig( level=logging.DEBUG )
-    else:
-        logging.basicConfig( level=logging.INFO )
-    logger = logging.getLogger( 'main' )
-
-    # Load auth config.
-    config = ConfigParser()
-    config.read( args.config )
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
-    db_path = config.get( 'options', 'db_path' )
-    skip = config.get( 'options', 'skip' )
-    notifier = Notifier(
-        config.get( 'notify', 'smtp_host' ),
-        config.get( 'notify', 'smtp_to' ),
-        config.get( 'notify', 'smtp_from' ) )
-    git = GitHub( username, api_token, args.topic, args.max_size, skip )
 
-    if args.db:
+    if kwargs['db']:
         with sqlite3.connect( db_path ) as db_conn:
 
             # Setup the database.
@@ -546,9 +497,81 @@ if '__main__' == __name__:
             db_conn.commit()
 
             local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
-            backup_all( git, local, username, args, notifier )
+            backup_all( git, local, username, notifier, **kwargs )
     else:
         # Don't use a DB connection.
         local = LocalRepo( config.get( 'options', 'repo_dir' ), None )
-        backup_all( git, local, username, args, notifier )
+        backup_all( git, local, username, notifier, **kwargs )
+
+def main():
+
+    # Parse CLI args.
+    parser = ArgumentParser()
+
+    parser.add_argument( '-c', '--config-file', default='gitbacker.ini',
+        help='Path to the config file to load.' )
+    parser.add_argument( '-q', '--quiet', action='store_true',
+        help='Quiet mode.' )
+    parser.add_argument( '-v', '--verbose', action='store_true',
+        help='Verbose mode.' )
+
+    subparsers = parser.add_subparsers()
+    
+    parser_backup = subparsers.add_parser( 'backup' )
+
+    parser_backup.add_argument( '-s', '--starred-repos', action='store_true',
+        help='Backup starred repositories.' )
+    parser_backup.add_argument( '-r', '--user-repos', action='store_true',
+        help='Backup user repositories.' )
+    parser_backup.add_argument( '-m', '--max-size', type=int,
+        help='Maximum repo size. Ignore repos larger than in MB.' )
+    parser_backup.add_argument( '-g', '--user-gists', action='store_true',
+        help='Backup user gists.' )
+    parser_backup.add_argument( '-f', '--starred-gists', action='store_true',
+        help='Backup authenticated user\'s starred gists.' )
+    parser_backup.add_argument( '-t', '--topic', action='store',
+        help='Only backup repositories with the given topic attached.' )
+    parser_backup.add_argument( '-x', '--redo', action='store_true',
+        help='Remove existing repos and re-clone.' )
+    parser_backup.add_argument( '-e', '--email', action='store',
+        help='Change the e-mail on commits to downloaded repos (implies -x).' )
+    parser_backup.add_argument( '-n', '--name', action='store',
+        help='Change the name on commits to downloaded repos (implies -x).' )
+    parser_backup.add_argument( '-d', '--db', action='store_true',
+        help='Store metadata in DB from config.' )
+
+    parser_backup.set_defaults( func=do_backup )
+
+    args = parser.parse_args()
+
+    if args.quiet:
+        logging.basicConfig( level=logging.WARNING )
+    elif args.verbose:
+        logging.basicConfig( level=logging.DEBUG )
+    else:
+        logging.basicConfig( level=logging.INFO )
+    logger = logging.getLogger( 'main' )
+
+    if 'func' not in args:
+        print( 'TODO: usage' )
+        sys.exit( 1 )
+
+    # Load auth config.
+    config = ConfigParser()
+    config.read( args.config_file )
+    username = config.get( 'auth', 'username' )
+    api_token = config.get( 'auth', 'token' )
+    db_path = config.get( 'options', 'db_path' )
+    skip = config.get( 'options', 'skip' )
+    notifier = Notifier(
+        config.get( 'notify', 'smtp_host' ),
+        config.get( 'notify', 'smtp_to' ),
+        config.get( 'notify', 'smtp_from' ) )
+    git = GitHub( username, api_token, args.topic, args.max_size, skip )
+
+    args_arr = vars( args )
+    args.func( git, notifier, config, **args_arr )
+
+if '__main__' == __name__:
+    main()
 
