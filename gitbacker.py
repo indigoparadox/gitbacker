@@ -149,7 +149,7 @@ class GitHub( object ):
             
             yield GitHubRepo( repo, self.topic_filter, self.max_size )
 
-    def get_own_starred_gists( self ):
+    def get_own_starred_gists( self, username ):
         response = self._call_api( 'gists/starred' )
         for gist in self._get_paged( response ):
             yield GitHubGist( gist, self.topic_filter, self.max_size )
@@ -335,97 +335,61 @@ class SigWatcher( object ):
         if self.force:
             sys.exit( 1 )
 
-def debug_print( struct ):
+#def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
+#
+#    ''' Backup all repos for the github user this script is accessing the
+#    API as, to the directory repo_dir/user_name. '''
+#
+#    count = 0
+#    logger = logging.getLogger( 'backup.repos.user' )
+#    for repo in git.get_own_user_repos():
+#
+#        repo_dir = local.get_path( repo.name )
+#        if os.path.exists( repo_dir ) and redo:
+#            # Remove the repo dir so it can be re-created.
+#            shutil.rmtree( repo_dir )
+#
+#        try:
+#            res = repo.backup( local )
+#        except GitBackupFailedException as e:
+#            notifier.send_exc(
+#                '[gitbacker] ERROR during user repo {}'.format( e.op ),
+#                'msg: {}, args: {}'.format(
+#                    e.msg, str( e.func_args ) ) )
+#            continue
+#
+#        # Change author/committer ID information if specified.
+#        #if res and uname and uemail:
+#        #    cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), '--', '--all']
+#        #    proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
+#
+#        #    git_std = proc.communicate()
+#        #    for line in git_std:
+#        #        if line:
+#        #            logger.info( '{}: {}'.format( repo.name, line.strip() ) )
+#
+#        #    # Prune all remotes to sterilize.
+#        #    r = Repo( repo_dir )
+#        #    for remote in r.remotes:
+#        #        Remote.remove( r, remote.name )
+#
+#        count += 1
+#
+#        if not watcher.running:
+#            return count
+#
+#    return count
 
-    from pprint import PrettyPrinter
-    pp = PrettyPrinter()
-    pp.pprint( struct )
-
-def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
-
-    ''' Backup all repos for the github user this script is accessing the
-    API as, to the directory repo_dir/user_name. '''
-
-    count = 0
-    logger = logging.getLogger( 'backup.repos.user' )
-    for repo in git.get_own_user_repos():
-
-        repo_dir = local.get_path( repo.name )
-        if os.path.exists( repo_dir ) and redo:
-            # Remove the repo dir so it can be re-created.
-            shutil.rmtree( repo_dir )
-
-        try:
-            res = repo.backup( local )
-        except GitBackupFailedException as e:
-            notifier.send_exc(
-                '[gitbacker] ERROR during user repo {}'.format( e.op ),
-                'msg: {}, args: {}'.format(
-                    e.msg, str( e.func_args ) ) )
-            continue
-
-        # Change author/committer ID information if specified.
-        if res and uname and uemail:
-            cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), '--', '--all']
-            proc = subprocess.Popen( cmd, cwd=repo_dir, stdout=subprocess.PIPE )
-
-            git_std = proc.communicate()
-            for line in git_std:
-                if line:
-                    logger.info( '{}: {}'.format( repo.name, line.strip() ) )
-
-            # Prune all remotes to sterilize.
-            r = Repo( repo_dir )
-            for remote in r.remotes:
-                Remote.remove( r, remote.name )
-
-        count += 1
-
-        if not watcher.running:
-            return count
-
-    return count
-
-def backup_starred_repos( git, local, username, notifier, watcher ):
+def backup_repos( local, username, notifier, watcher, fetcher ):
     count = 0
     logger = logging.getLogger( 'backup.repos.starred' )
-    for repo in git.get_starred_repos( username ):
+    for repo in fetcher( username ):
         try:
             repo.backup( local )
             count += 1
         except GitBackupFailedException as e:
             notifier.send_exc(
-                '[gitbacker] ERROR during starred repo {}'.format( e.op ),
-                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
-        if not watcher.running:
-            return count
-    return count
-
-def backup_user_gists( git, local, username, notifier, watcher ):
-    count = 0
-    logger = logging.getLogger( 'backup.gists.user' )
-    for gist in git.get_user_gists( username ):
-        try:
-            gist.backup( local )
-            count += 1
-        except GitBackupFailedException as e:
-            notifier.send_exc(
-                '[gitbacker] ERROR during user gist {}'.format( e.op ),
-                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
-        if not watcher.running:
-            return count
-    return count
-
-def backup_starred_gists( git, local, notifier, watcher ):
-    count = 0
-    logger = logging.getLogger( 'backup.gists.starred' )
-    for gist in git.get_own_starred_gists():
-        try:
-            gist.backup( local )
-            count += 1
-        except GitBackupFailedException as e:
-            notifier.send_exc(
-                '[gitbacker] ERROR during starred gist {}'.format( e.op ),
+                '[gitbacker] ERROR during repo {}'.format( e.op ),
                 'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
         if not watcher.running:
             return count
@@ -435,9 +399,7 @@ def backup_all( git, local, username, notifier, **kwargs ):
 
     logger = logging.getLogger( 'backup' )
 
-    error_cond = False
     repos_count = 0
-    redo = False
     watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
     signal.signal( signal.SIGINT, watcher.handle )
     signal.signal( signal.SIGTERM, watcher.handle )
@@ -447,61 +409,24 @@ def backup_all( git, local, username, notifier, **kwargs ):
         redo = True
 
     if kwargs['starred_repos']:
-        try:
-            repos_count += backup_starred_repos(
-                git, local, username, notifier, watcher )
-        except Exception as e:
-            error_cond = True
-            notifier.send_exc(
-                '[gitbacker] ERROR during starred_repos', str( e ) )
-            logger.exception( e )
-
-        if not watcher.running:
-            return
+        repos_count += backup_repos(
+            local, username, notifier, watcher, git.get_starred_repos )
 
     if kwargs['user_repos']:
-        try:
-            repos_count += backup_user_repos(
-                git, local, redo, kwargs['name'],
-                kwargs['email'], notifier, watcher )
-        except Exception as e:
-            error_cond = True
-            notifier.send_exc(
-                '[gitbacker] ERROR during user_repos', str( e ) )
-            logger.exception( e )
-
-        if not watcher.running:
-            return
+        repos_count += backup_repos(
+            local, kwargs['name'], notifier, watcher, git.get_own_user_repos )
 
     if kwargs['user_gists']:
-        try:
-            repos_count += backup_user_gists(
-                git, local, username, notifier, watcher )
-        except Exception as e:
-            error_cond = True
-            notifier.send_exc(
-                '[gitbacker] ERROR during user_gists', str( e ) )
-            logger.exception( e )
-
-        if not watcher.running:
-            return
+        repos_count += backup_repos(
+            git, local, username, notifier, watcher, git.get_user_gists )
 
     if kwargs['starred_gists']:
-        try:
-            repos_count += backup_starred_gists( git, local, notifier, watcher )
-        except Exception as e:
-            error_cond = True
-            notifier.send_exc(
-                '[gitbacker] ERROR during starred_gists', str( e ) )
-            logger.exception( e )
+        repos_count += backup_repos(
+            git, local, username, notifier, watcher, git.get_own_starred_gists )
 
-        if not watcher.running:
-            return
-
-    if not error_cond:
-        notifier.send(
-            '[gitbacker] Backed up {} repos OK'.format( repos_count ),
-            'Backed up {} repos OK'.format( repos_count ) )
+    notifier.send(
+        '[gitbacker] Backed up {} repos OK'.format( repos_count ),
+        'Backed up {} repos OK'.format( repos_count ) )
 
 def do_backup( config, notifier, **kwargs ):
 
@@ -511,7 +436,8 @@ def do_backup( config, notifier, **kwargs ):
     api_token = config.get( 'auth', 'token' )
     skip = config.get( 'options', 'skip' )
     db_path = config.get( 'options', 'db_path' )
-    git = GitHub( username, api_token, args.topic, args.max_size, skip )
+    git = GitHub(
+        username, api_token, kwargs['topic'], kwargs['max_size'], skip )
 
     if kwargs['db']:
         with sqlite3.connect( db_path ) as db_conn:
@@ -556,7 +482,8 @@ def main():
 
     subparsers = parser.add_subparsers()
     
-    parser_backup = subparsers.add_parser( 'backup' )
+    parser_backup = subparsers.add_parser(
+        'backup', help='Perform backup of repositories locally.' )
 
     parser_backup.add_argument( '-s', '--starred-repos', action='store_true',
         help='Backup starred repositories.' )
@@ -596,7 +523,7 @@ def main():
     logger = logging.getLogger( 'main' )
 
     if 'func' not in args:
-        print( 'TODO: usage' )
+        parser.print_help()
         sys.exit( 1 )
 
     # Load auth config.
@@ -607,8 +534,13 @@ def main():
         config.get( 'notify', 'smtp_to' ),
         config.get( 'notify', 'smtp_from' ) )
 
-    args_arr = vars( args )
-    args.func( config, notifier, **args_arr )
+    try:
+        args_arr = vars( args )
+        args.func( config, notifier, **args_arr )
+    except Exception as e:
+        notifier.send_exc(
+            '[gitbacker] ERROR during starred_repos', str( e ) )
+        logger.exception( e )
 
 if '__main__' == __name__:
     main()
