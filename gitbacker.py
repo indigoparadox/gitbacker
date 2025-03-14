@@ -175,6 +175,8 @@ class LocalRepo( object ):
                 func( **kwargs )
                 # If successful, don't loop.
                 try_count = 0
+            except GitBackupFailedException as e:
+                raise e
             except Exception as e:
                 if PATTERN_REMOTE_REF.search( str( e ) ):
                     # TODO: Maybe use a different logger?
@@ -321,18 +323,25 @@ class Notifier( object ):
 
     def send_exc( self, subject, e ):
 
-        self.send( subject, e + '\n\n\n' + traceback.format_exc() )
+        #self.send( subject, e + '\n\n\n' + traceback.format_exc() )
+        self.send( subject, e )
 
 class SigWatcher( object ):
     def __init__( self, notifier, force=False ):
         self.notifier = notifier
         self.force = force
         self.running = True
+        self.procs = []
+
+    def add_proc( self, proc ):
+        self.procs.append( proc )
 
     def handle( self, signum, frame ):
         self.notifier.send(
             '[gitbacker] Received Signal {}'.format( signum ), '' )
         self.running = False
+        for p in self.procs:
+            p.terminate()
         if self.force:
             sys.exit( 1 )
 
@@ -401,13 +410,13 @@ def backup_repos( div, step, local, username, notifier, watcher, fetcher ):
             count_success += 1
         except GitBackupFailedException as e:
             notifier.send_exc(
-                '[gitbacker] ERROR during repo {}'.format( e.op ),
+                '[gitbacker] ERROR during repo {}'.format( e.op.__name__ ),
                 'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
         if not watcher.running:
-            return count
-    return count
+            return count_success
+    return count_success
 
-def do_backup( config, notifier, div, step, kwargs ):
+def do_backup( config, notifier, watcher, div, step, kwargs ):
 
     logger = logging.getLogger( 'backup' )
 
@@ -417,10 +426,6 @@ def do_backup( config, notifier, div, step, kwargs ):
     db_path = config.get( 'options', 'db_path' )
     git = GitHub(
         username, api_token, kwargs['topic'], kwargs['max_size'], skip )
-
-    watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
-    signal.signal( signal.SIGINT, watcher.handle )
-    signal.signal( signal.SIGTERM, watcher.handle )
 
     repos_count = 0
     db_conn = None
@@ -490,6 +495,8 @@ def main():
         help='Quiet mode.' )
     parser.add_argument( '-v', '--verbose', action='store_true',
         help='Verbose mode.' )
+    parser.add_argument( '-w', '--workers', type=int, default=1,
+        help='Number of worker processes.' )
 
     subparsers = parser.add_subparsers()
     
@@ -540,21 +547,30 @@ def main():
     # Load auth config.
     config = ConfigParser()
     config.read( args.config_file )
+
     notifier = Notifier(
         config.get( 'notify', 'smtp_host' ),
         config.get( 'notify', 'smtp_to' ),
         config.get( 'notify', 'smtp_from' ) )
 
+    watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
+    signal.signal( signal.SIGINT, watcher.handle )
+    signal.signal( signal.SIGTERM, watcher.handle )
+
     try:
         args_arr = vars( args )
-        p1 = multiprocessing.Process(
-            target=args.func, args=(config, notifier, 2, 0, args_arr) )
-        p2 = multiprocessing.Process(
-            target=args.func, args=(config, notifier, 2, 1, args_arr) )
-        p1.start()
-        p2.start()
-        p1.join()
-        p2.join()
+        procs = []
+        for p in range( 0, args.workers ):
+            p_proc = multiprocessing.Process(
+                target=args.func, args=(config, notifier, watcher,
+                args.workers, p, args_arr) )
+            watcher.add_proc( p_proc )
+            procs.append( p_proc )
+            p_proc.start()
+
+        for p in procs:
+            p.join()
+
     except Exception as e:
         notifier.send_exc(
             '[gitbacker] ERROR during starred_repos', str( e ) )
