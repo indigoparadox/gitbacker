@@ -11,6 +11,7 @@ import sqlite3
 import traceback
 import signal
 import sys
+import multiprocessing
 from argparse import ArgumentParser
 from smtplib import SMTP
 try:
@@ -380,13 +381,24 @@ class SigWatcher( object ):
 #
 #    return count
 
-def backup_repos( local, username, notifier, watcher, fetcher ):
-    count = 0
-    logger = logging.getLogger( 'backup.repos.starred' )
+def backup_repos( div, step, local, username, notifier, watcher, fetcher ):
+    count_processed = 0
+    count_success = 0
+    logger = logging.getLogger( 'backup.repos' )
     for repo in fetcher( username ):
+
+        # Allocate by process/thread.
+        count_processed += 1
+        if step != (count_processed % div):
+            # Not this thread's business.
+            logger.debug(
+                'skipping repo %s on thread %d...', repo.name, os.getpid() )
+            continue
+
+        # Perform the backup.
         try:
             repo.backup( local )
-            count += 1
+            count_success += 1
         except GitBackupFailedException as e:
             notifier.send_exc(
                 '[gitbacker] ERROR during repo {}'.format( e.op ),
@@ -395,7 +407,7 @@ def backup_repos( local, username, notifier, watcher, fetcher ):
             return count
     return count
 
-def do_backup( config, notifier, **kwargs ):
+def do_backup( config, notifier, div, step, kwargs ):
 
     logger = logging.getLogger( 'backup' )
 
@@ -432,20 +444,23 @@ def do_backup( config, notifier, **kwargs ):
 
         if kwargs['starred_repos']:
             repos_count += backup_repos(
+                div, step,
                 local, username, notifier, watcher, git.get_starred_repos )
 
         if kwargs['user_repos']:
             repos_count += backup_repos(
+                div, step,
                 local, kwargs['name'],
                 notifier, watcher, git.get_own_user_repos )
 
         if kwargs['user_gists']:
             repos_count += backup_repos(
+                div, step,
                 git, local, username, notifier, watcher, git.get_user_gists )
 
         if kwargs['starred_gists']:
             repos_count += backup_repos(
-                git, local, username, notifier, watcher,
+                div, step, git, local, username, notifier, watcher,
                 git.get_own_starred_gists )
 
     finally:
@@ -532,7 +547,14 @@ def main():
 
     try:
         args_arr = vars( args )
-        args.func( config, notifier, **args_arr )
+        p1 = multiprocessing.Process(
+            target=args.func, args=(config, notifier, 2, 0, args_arr) )
+        p2 = multiprocessing.Process(
+            target=args.func, args=(config, notifier, 2, 1, args_arr) )
+        p1.start()
+        p2.start()
+        p1.join()
+        p2.join()
     except Exception as e:
         notifier.send_exc(
             '[gitbacker] ERROR during starred_repos', str( e ) )
