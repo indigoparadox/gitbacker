@@ -191,7 +191,7 @@ class LocalRepo( object ):
                     if 0 >= try_count:
                         # Just give up for now.
                         raise GitBackupFailedException(
-                            str( e ), str( func ), **kwargs )
+                            str( e ), func.__name__, **kwargs )
 
     def get_root( self ):
         return self._root
@@ -327,23 +327,26 @@ class Notifier( object ):
         self.send( subject, e )
 
 class SigWatcher( object ):
-    def __init__( self, notifier, force=False ):
+    def __init__( self, notifier, msg_queue, force=False ):
         self.notifier = notifier
         self.force = force
         self.running = True
         self.procs = []
+        self.msg_queue = msg_queue
 
     def add_proc( self, proc ):
         self.procs.append( proc )
 
     def handle( self, signum, frame ):
-        self.notifier.send(
-            '[gitbacker] Received Signal {}'.format( signum ), '' )
+        #self.notifier.send(
+        #    '[gitbacker] Received Signal {}'.format( signum ), '' )
         self.running = False
         for p in self.procs:
-            p.terminate()
-        if self.force:
-            sys.exit( 1 )
+            self.msg_queue.put( 'quit' )
+        #if self.force:
+        #    for p in self.procs:
+        #        p.terminate()
+        #    sys.exit( 1 )
 
 #def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
 #
@@ -390,7 +393,7 @@ class SigWatcher( object ):
 #
 #    return count
 
-def backup_repos( div, step, local, username, notifier, watcher, fetcher ):
+def backup_repos( div, step, local, username, notifier, msg_queue, fetcher ):
     count_processed = 0
     count_success = 0
     logger = logging.getLogger( 'backup.repos' )
@@ -410,13 +413,16 @@ def backup_repos( div, step, local, username, notifier, watcher, fetcher ):
             count_success += 1
         except GitBackupFailedException as e:
             notifier.send_exc(
-                '[gitbacker] ERROR during repo {}'.format( e.op.__name__ ),
+                '[gitbacker] ERROR during repo {}'.format( e.op ),
                 'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
-        if not watcher.running:
+
+        if not msg_queue.empty():
+            # Assume the only thing in the queue would be a quit signal.
+            logger.info( 'received quit message!' )
             return count_success
     return count_success
 
-def do_backup( config, notifier, watcher, div, step, kwargs ):
+def do_backup( config, notifier, res_queue, msg_queue, div, step, kwargs ):
 
     logger = logging.getLogger( 'backup' )
 
@@ -450,22 +456,22 @@ def do_backup( config, notifier, watcher, div, step, kwargs ):
         if kwargs['starred_repos']:
             repos_count += backup_repos(
                 div, step,
-                local, username, notifier, watcher, git.get_starred_repos )
+                local, username, notifier, msg_queue, git.get_starred_repos )
 
         if kwargs['user_repos']:
             repos_count += backup_repos(
                 div, step,
                 local, kwargs['name'],
-                notifier, watcher, git.get_own_user_repos )
+                notifier, msg_queue, git.get_own_user_repos )
 
         if kwargs['user_gists']:
             repos_count += backup_repos(
                 div, step,
-                git, local, username, notifier, watcher, git.get_user_gists )
+                git, local, username, notifier, msg_queue, git.get_user_gists )
 
         if kwargs['starred_gists']:
             repos_count += backup_repos(
-                div, step, git, local, username, notifier, watcher,
+                div, step, git, local, username, notifier, msg_queue,
                 git.get_own_starred_gists )
 
     finally:
@@ -473,9 +479,7 @@ def do_backup( config, notifier, watcher, div, step, kwargs ):
         if db_conn:
             db_conn.close()
 
-        notifier.send(
-            '[gitbacker] Backed up {} repos OK'.format( repos_count ),
-            'Backed up {} repos OK'.format( repos_count ) )
+        res_queue.put( repos_count )
 
 def do_metaref( config, notifier, **kwargs ):
 
@@ -497,6 +501,8 @@ def main():
         help='Verbose mode.' )
     parser.add_argument( '-w', '--workers', type=int, default=1,
         help='Number of worker processes.' )
+    parser.add_argument( '-p', '--pidfile', action='store',
+        help='Path to file to write PID of master process to.' )
 
     subparsers = parser.add_subparsers()
     
@@ -553,27 +559,47 @@ def main():
         config.get( 'notify', 'smtp_to' ),
         config.get( 'notify', 'smtp_from' ) )
 
-    watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
-    signal.signal( signal.SIGINT, watcher.handle )
-    signal.signal( signal.SIGTERM, watcher.handle )
+    # Setup the process management structures.
+    msg_queue = multiprocessing.Queue()
+    watcher = SigWatcher( notifier, msg_queue, True )
+    res_queue = multiprocessing.Queue()
+
+    # Write a PID file if requested.
+    if args.pidfile:
+        with open( args.pidfile, 'w' ) as pidfile:
+            pidfile.write( str( os.getpid() ) )
 
     try:
         args_arr = vars( args )
         procs = []
         for p in range( 0, args.workers ):
             p_proc = multiprocessing.Process(
-                target=args.func, args=(config, notifier, watcher,
+                target=args.func, args=(config, notifier, res_queue, msg_queue,
                 args.workers, p, args_arr) )
             watcher.add_proc( p_proc )
             procs.append( p_proc )
             p_proc.start()
 
+        # Even if we engage the signal handler here, the children still seem
+        # to get their own copy? But the msg_queue system seems to work cleanly
+        # regardless, so w/e.
+        signal.signal( signal.SIGINT, watcher.handle )
+        signal.signal( signal.SIGTERM, watcher.handle )
+
         for p in procs:
             p.join()
 
+        repos_count = 0
+        while not res_queue.empty():
+            repos_count += res_queue.get()
+
+        notifier.send(
+            '[gitbacker] Backed up {} repos OK'.format( repos_count ),
+            'Backed up {} repos OK'.format( repos_count ) )
+
     except Exception as e:
         notifier.send_exc(
-            '[gitbacker] ERROR during starred_repos', str( e ) )
+            '[gitbacker] Uncaught ERROR during gitbacker', str( e ) )
         logger.exception( e )
 
 if '__main__' == __name__:
