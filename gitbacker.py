@@ -395,42 +395,9 @@ def backup_repos( local, username, notifier, watcher, fetcher ):
             return count
     return count
 
-def backup_all( git, local, username, notifier, **kwargs ):
-
-    logger = logging.getLogger( 'backup' )
-
-    repos_count = 0
-    watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
-    signal.signal( signal.SIGINT, watcher.handle )
-    signal.signal( signal.SIGTERM, watcher.handle )
-
-    if kwargs['name'] or kwargs['email'] or kwargs['redo']:
-        logger.info( 'Redo enabled.' )
-        redo = True
-
-    if kwargs['starred_repos']:
-        repos_count += backup_repos(
-            local, username, notifier, watcher, git.get_starred_repos )
-
-    if kwargs['user_repos']:
-        repos_count += backup_repos(
-            local, kwargs['name'], notifier, watcher, git.get_own_user_repos )
-
-    if kwargs['user_gists']:
-        repos_count += backup_repos(
-            git, local, username, notifier, watcher, git.get_user_gists )
-
-    if kwargs['starred_gists']:
-        repos_count += backup_repos(
-            git, local, username, notifier, watcher, git.get_own_starred_gists )
-
-    notifier.send(
-        '[gitbacker] Backed up {} repos OK'.format( repos_count ),
-        'Backed up {} repos OK'.format( repos_count ) )
-
 def do_backup( config, notifier, **kwargs ):
 
-    # TODO: Consolidate with backup_all().
+    logger = logging.getLogger( 'backup' )
 
     username = config.get( 'auth', 'username' )
     api_token = config.get( 'auth', 'token' )
@@ -439,27 +406,56 @@ def do_backup( config, notifier, **kwargs ):
     git = GitHub(
         username, api_token, kwargs['topic'], kwargs['max_size'], skip )
 
-    if kwargs['db']:
-        with sqlite3.connect( db_path ) as db_conn:
+    watcher = SigWatcher( notifier, True ) # TODO: Don't force unless requested.
+    signal.signal( signal.SIGINT, watcher.handle )
+    signal.signal( signal.SIGTERM, watcher.handle )
 
-            # Setup the database.
-            cur = db_conn.cursor()
-            cur.execute( '''CREATE TABLE IF NOT EXISTS repos (
-                id INTEGER PRIMARY KEY,
-                owner TEXT NOT NULL,
-                name TEXT NOT NULL,
-                repo_id TEXT NOT NULL,
-                topics TEXT,
-                desc TEXT)
-            ''' )
-            db_conn.commit()
+    repos_count = 0
+    db_conn = None
+    try:
+        if kwargs['db']:
+            with sqlite3.connect( db_path ) as db_conn:
 
-            local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
-            backup_all( git, local, username, notifier, **kwargs )
-    else:
-        # Don't use a DB connection.
-        local = LocalRepo( config.get( 'options', 'repo_dir' ), None )
-        backup_all( git, local, username, notifier, **kwargs )
+                # Setup the database.
+                cur = db_conn.cursor()
+                cur.execute( '''CREATE TABLE IF NOT EXISTS repos (
+                    id INTEGER PRIMARY KEY,
+                    owner TEXT NOT NULL,
+                    name TEXT NOT NULL,
+                    repo_id TEXT NOT NULL,
+                    topics TEXT,
+                    desc TEXT)
+                ''' )
+                db_conn.commit()
+
+        local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
+
+        if kwargs['starred_repos']:
+            repos_count += backup_repos(
+                local, username, notifier, watcher, git.get_starred_repos )
+
+        if kwargs['user_repos']:
+            repos_count += backup_repos(
+                local, kwargs['name'],
+                notifier, watcher, git.get_own_user_repos )
+
+        if kwargs['user_gists']:
+            repos_count += backup_repos(
+                git, local, username, notifier, watcher, git.get_user_gists )
+
+        if kwargs['starred_gists']:
+            repos_count += backup_repos(
+                git, local, username, notifier, watcher,
+                git.get_own_starred_gists )
+
+    finally:
+        # Close the database if it was opened.
+        if db_conn:
+            db_conn.close()
+
+        notifier.send(
+            '[gitbacker] Backed up {} repos OK'.format( repos_count ),
+            'Backed up {} repos OK'.format( repos_count ) )
 
 def do_metaref( config, notifier, **kwargs ):
 
