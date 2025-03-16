@@ -140,7 +140,7 @@ class GitHub( object ):
         for repo in self._get_paged( response ):
             yield GitHubRepo( repo, self.topic_filter, self.max_size )
 
-    def get_own_user_repos( self ):
+    def get_own_user_repos( self, username ):
         response = self._call_api( 'user/repos' )
         for repo in self._get_paged( response ):
             repo_full = '{}/{}'.format( repo['owner']['login'], repo['name'] )
@@ -311,6 +311,7 @@ class Notifier( object ):
         self.host = host
         self.to_addr = to_addr
         self.from_addr = from_addr
+        self.e_list = []
 
     def send( self, subject, body ):
 
@@ -325,6 +326,15 @@ class Notifier( object ):
 
         #self.send( subject, e + '\n\n\n' + traceback.format_exc() )
         self.send( subject, e )
+
+    def queue_exc( self, e ):
+        self.e_list.append( e )
+
+    def send_queued( self ):
+        if len( self.e_list ) > 0:
+            self.send(
+                '[gitbacker] ERRORs during gitbacker',
+                '\n\n'.join( self.e_list ) )
 
 class SigWatcher( object ):
     def __init__( self, notifier, msg_queue, force=False ):
@@ -348,29 +358,7 @@ class SigWatcher( object ):
         #        p.terminate()
         #    sys.exit( 1 )
 
-#def backup_user_repos( git, local, redo, uname, uemail, notifier, watcher ):
-#
-#    ''' Backup all repos for the github user this script is accessing the
-#    API as, to the directory repo_dir/user_name. '''
-#
-#    count = 0
-#    logger = logging.getLogger( 'backup.repos.user' )
-#    for repo in git.get_own_user_repos():
-#
-#        repo_dir = local.get_path( repo.name )
-#        if os.path.exists( repo_dir ) and redo:
-#            # Remove the repo dir so it can be re-created.
-#            shutil.rmtree( repo_dir )
-#
-#        try:
-#            res = repo.backup( local )
-#        except GitBackupFailedException as e:
-#            notifier.send_exc(
-#                '[gitbacker] ERROR during user repo {}'.format( e.op ),
-#                'msg: {}, args: {}'.format(
-#                    e.msg, str( e.func_args ) ) )
-#            continue
-#
+# TODO: Make a function for this.
 #        # Change author/committer ID information if specified.
 #        #if res and uname and uemail:
 #        #    cmd = ['git', 'filter-branch', '-f', '--env-filter', "GIT_AUTHOR_NAME='{}'; GIT_AUTHOR_EMAIL='{}'; GIT_COMMITTER_NAME='{}'; GIT_COMMITTER_EMAIL='{}';".format( uname, uemail, uname, uemail ), '--', '--all']
@@ -385,13 +373,6 @@ class SigWatcher( object ):
 #        #    r = Repo( repo_dir )
 #        #    for remote in r.remotes:
 #        #        Remote.remove( r, remote.name )
-#
-#        count += 1
-#
-#        if not watcher.running:
-#            return count
-#
-#    return count
 
 def backup_repos( div, step, local, username, notifier, msg_queue, fetcher ):
     count_processed = 0
@@ -412,9 +393,11 @@ def backup_repos( div, step, local, username, notifier, msg_queue, fetcher ):
             repo.backup( local )
             count_success += 1
         except GitBackupFailedException as e:
-            notifier.send_exc(
-                '[gitbacker] ERROR during repo {}'.format( e.op ),
-                'msg: {}, args: {}'.format( e.msg, str( e.func_args ) ) )
+            notifier.queue_exc(
+                'msg: {}, op: {}, args: {}'.format(
+                    e.msg, e.op, str( e.func_args ) ) )
+
+        notifier.send_queued()
 
         if not msg_queue.empty():
             # Assume the only thing in the queue would be a quit signal.
