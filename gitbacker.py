@@ -23,6 +23,9 @@ from git.exc import GitCommandError
 
 PATTERN_REMOTE_REF = re.compile( r'.*find remote ref.*' )
 
+MP_MSG_COUNT = 1
+MP_MSG_ERRS = 2
+
 class GitBackupFailedException( Exception ):
     def __init__( self, msg, op, **kwargs ):
         super( GitBackupFailedException, self ).__init__(
@@ -330,11 +333,12 @@ class Notifier( object ):
     def queue_exc( self, e ):
         self.e_list.append( e )
 
-    def send_queued( self ):
+    def send_queued( self, res_queue ):
         if len( self.e_list ) > 0:
-            self.send(
-                '[gitbacker] ERRORs during gitbacker',
-                '\n\n'.join( self.e_list ) )
+            res_queue.put( (MP_MSG_ERRS, '\n\n'.join( self.e_list) ) )
+            #self.send(
+            #    '[gitbacker] ERRORs during gitbacker',
+            #    '\n\n'.join( self.e_list ) )
 
 class SigWatcher( object ):
     def __init__( self, notifier, msg_queue, force=False ):
@@ -397,8 +401,6 @@ def backup_repos( div, step, local, username, notifier, msg_queue, fetcher ):
                 'msg: {}, op: {}, args: {}'.format(
                     e.msg, e.op, str( e.func_args ) ) )
 
-        notifier.send_queued()
-
         if not msg_queue.empty():
             # Assume the only thing in the queue would be a quit signal.
             logger.info( 'received quit message!' )
@@ -435,6 +437,7 @@ def do_backup( config, notifier, res_queue, msg_queue, div, step, kwargs ):
                 db_conn.commit()
 
         local = LocalRepo( config.get( 'options', 'repo_dir' ), db_conn )
+        err_list = []
 
         if kwargs['starred_repos']:
             repos_count += backup_repos(
@@ -462,7 +465,9 @@ def do_backup( config, notifier, res_queue, msg_queue, div, step, kwargs ):
         if db_conn:
             db_conn.close()
 
-        res_queue.put( repos_count )
+        notifier.send_queued( res_queue )
+
+        res_queue.put( (MP_MSG_COUNT, repos_count) )
 
 def do_metaref( config, notifier, **kwargs ):
 
@@ -573,8 +578,18 @@ def main():
             p.join()
 
         repos_count = 0
+        err_msgs = []
         while not res_queue.empty():
-            repos_count += res_queue.get()
+            msg = res_queue.get()
+            if MP_MSG_COUNT == msg[0]:
+                repos_count += msg[1]
+            elif MP_MSG_ERRS == msg[0]:
+                err_msgs.append( msg[1] )
+
+        if 0 < len( err_msgs ):
+            notifier.send(
+                '[gitbacker] Errors during run',
+                '\n\n'.join( err_msgs ) )
 
         notifier.send(
             '[gitbacker] Backed up {} repos OK'.format( repos_count ),
