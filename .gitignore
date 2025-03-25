@@ -4,3 +4,4 @@ gitbacker.ini
 *.pyc
 venv
 .venv
+*.egg-info
